@@ -76,26 +76,43 @@ class DataManager:
         train_topics, test_topics = train_test_split(
             topics, test_size=self.config.get("test_size", 0.2), random_state=42
         )
+
+        train_topics_copy = train_topics.copy()
+
         train_topics, val_topics = train_test_split(
             train_topics, test_size=self.config.get("val_size", 0.2), random_state=42
         )
+
+        # Group training data by query length
+        train_by_length = {
+            length: train_topics_copy[train_topics_copy['query_length_category'] == length]
+            for length in ['short', 'medium', 'long']
+        }
+
+        val_by_length = {
+            length: test_topics[test_topics['query_length_category'] == length]
+            for length in ['short', 'medium', 'long']
+        }
 
         # Filter qrels based on the qids in each split using column filtering
         train_qrels = qrels[qrels['qid'].isin(train_topics['qid'])]
         val_qrels = qrels[qrels['qid'].isin(val_topics['qid'])]
         test_qrels = qrels[qrels['qid'].isin(test_topics['qid'])]
 
-        # Group training data by query length
-        train_by_length = {
-            length: train_topics[train_topics['query_length_category'] == length]
-            for length in ['short', 'medium', 'long']
-        }
+        # Filter qrels based on the qids in each split using column filtering
+        train_length_qrels = qrels[qrels['qid'].isin(train_topics_copy['qid'])]
 
         # Grouping qrel training data by length
-        train_qrels_by_length = {
-            length: train_qrels[train_qrels['qid'].isin(df['qid'])]
-            for length, df in train_by_length.items()
-        }
+        train_qrels_by_length = {}
+        for length, df in train_by_length.items():
+            valid_qids = df['qid'].values  # Extract valid qids as a NumPy array
+            train_qrels_by_length[length] = train_qrels[train_qrels['qid'].isin(valid_qids)]
+
+        # Grouping qrel validation data by length
+        val_qrels_by_length = {}
+        for length, df in val_by_length.items():
+            valid_qids = df['qid'].values  # Extract valid qids as a NumPy array
+            val_qrels_by_length[length] = test_qrels[test_qrels['qid'].isin(valid_qids)]
 
         print('Processing complete!')
         return {
@@ -107,7 +124,9 @@ class DataManager:
             'val_qrels': val_qrels,  # Query relevance judgments (qrels) that specify which documents are relevant to which queries. - Dataframe
             'test_qrels': test_qrels,  # Query relevance judgments (qrels) that specify which documents are relevant to which queries. - Dataframe
             'train_by_length': train_by_length,  # three training sets (queries) seperated by different lengths - Dataframe
+            'val_by_length': val_by_length,  # three validation sets (queries) seperated by different lengths - Dataframe
             'train_qrels_by_length': train_qrels_by_length,  # three training sets (qrels) seperated by different lengths - Dataframe
+            'val_qrels_by_length': val_qrels_by_length,  # three validation sets (qrels) seperated by different lengths - Dataframe
             'index_variant': index_variant  # Indicates which index variant is being used for the dataset (e.g., "terrier_stemmed"). - String
         }
 
@@ -130,10 +149,9 @@ class DataManager:
         with open(f'../data/corpus/{dataset_name}/corpus_path.txt', 'w') as f:
             f.write(str(dataset['corpus'][0]))
 
-        # Merge the dataframes on the 'qid' column
-        merged_train_df = pd.merge(dataset['train_topics'],dataset['train_qrels'],on='qid',how='inner').drop(columns=['query_length_category', 'label'], axis=1)
-        merged_val_df = pd.merge(dataset['val_topics'],dataset['val_qrels'],on='qid',how='inner').drop(columns=['query_length_category', 'label'], axis=1)
-        merged_test_df = pd.merge(dataset['test_topics'],dataset['test_qrels'],on='qid',how='inner').drop(columns=['query_length_category', 'label'], axis=1)
+        merged_train_df = pd.merge(dataset['train_topics'], dataset['train_qrels'], on='qid', how='inner')
+        merged_val_df = pd.merge(dataset['val_topics'], dataset['val_qrels'], on='qid', how='inner')
+        merged_test_df = pd.merge(dataset['test_topics'], dataset['test_qrels'], on='qid', how='inner')
 
         # Save topics
         merged_train_df.to_csv(f'../data/full_dataset/{dataset_name}/train.csv', index=False)
@@ -143,10 +161,16 @@ class DataManager:
         # Save train_by_length dataframes
         for topic, qrel in zip(dataset['train_by_length'].items(), dataset['train_qrels_by_length'].items()):
             os.makedirs(f'../data/dataset_by_length/{dataset_name}/{topic[0]}', exist_ok=True)
-            # Merge the dataframes on the 'qid' column
-            merged_df = pd.merge(topic[1],qrel[1],on='qid',how='inner').drop(columns=['query_length_category', 'label'], axis=1)
-            merged_df.to_csv(f'../data/dataset_by_length/{dataset_name}/{topic[0]}/train.csv', index=False)
+            qrel_df = qrel[1].drop(columns=['label'], axis=1)
+            topic[1].to_csv(f'../data/dataset_by_length/{dataset_name}/{topic[0]}/train.csv', index=False)
+            qrel_df.to_csv(f'../data/dataset_by_length/{dataset_name}/{topic[0]}/train_qrels.csv', index=False)
 
+        # Save val_by_length dataframes
+        for topic, qrel in zip(dataset['val_by_length'].items(), dataset['val_qrels_by_length'].items()):
+            os.makedirs(f'../data/dataset_by_length/{dataset_name}/{topic[0]}', exist_ok=True)
+            qrel_df = qrel[1].drop(columns=['label'], axis=1)
+            topic[1].to_csv(f'../data/dataset_by_length/{dataset_name}/{topic[0]}/val.csv', index=False)
+            qrel_df.to_csv(f'../data/dataset_by_length/{dataset_name}/{topic[0]}/val_qrels.csv', index=False)
 
         # Save metadata about the dataset
         metadata = {
