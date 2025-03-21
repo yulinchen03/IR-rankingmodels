@@ -1,3 +1,5 @@
+irvenv/
+
 .idea/
 
 data/*
