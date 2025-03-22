@@ -53,9 +53,6 @@ class DataProcessor:
             random.seed(random_state)
         random.shuffle(keys)
 
-        query_train, query_val = {}, {}
-        qrel_train, qrel_val = {}, {}
-
         # if dataset is used solely for training (only when seperate test set available)
         train_size = int(num_samples * train_ratio)
 
