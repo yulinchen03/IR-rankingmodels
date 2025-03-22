@@ -1,21 +1,22 @@
 import random
 from torch.utils.data import Dataset
+from tqdm import tqdm
 
 
 class TripletRankingDataset(Dataset):
-    def __init__(self, queries, documents, qrels, tokenizer, num_negatives, max_length=512):
+    def __init__(self, queries, documents, qrels, tokenizer, num_negatives, neg_sample_size=20, max_length=512):
         self.triplets = []
         self.num_negatives = num_negatives
 
         # For each query, find positive documents and sample negatives
-        for qid, doc_dict in qrels.items():
+        for qid, doc_dict in tqdm(qrels.items()):
             if qid not in queries:
                 continue
 
             query = queries[qid]
 
             # if dataset does not contain negatives, randomly sample
-            if num_negatives == 0:
+            if self.num_negatives == 0:
                 # Get positive documents
                 positive_docs = [did for did, relevance in doc_dict.items() if did in documents]
 
@@ -26,8 +27,7 @@ class TripletRankingDataset(Dataset):
                 # Create triplets
                 for pos_did in positive_docs:
                     # Sample a subset of negative documents
-                    sampled_negatives = random.sample(negative_candidates,
-                                                      min(self.num_negatives, len(negative_candidates)))
+                    sampled_negatives = random.sample(negative_candidates, min(neg_sample_size, len(negative_candidates)))
 
                     for neg_did in sampled_negatives:
                         self.triplets.append((

@@ -1,17 +1,17 @@
-Evaluation Results for distilbert-base-uncased model finetuned on short queries from scidocs dataset:
-normalized Discounted Cumulative Gain@10: 0.4639
-normalized Discounted Cumulative Gain@100: 0.6251
+Evaluation Results for distilbert-base-uncased model finetuned on medium queries from scifact dataset:
+normalized Discounted Cumulative Gain@10: 0.6881
+normalized Discounted Cumulative Gain@100: 0.7235
 
-[Mean] Average Precision@10: 0.3152
-[Mean] Average Precision@100: 0.3988
+[Mean] Average Precision@10: 0.6300
+[Mean] Average Precision@100: 0.6392
 
-Precision@10: 0.2868
-Recall@10: 0.5895
+Precision@10: 0.0947
+Recall@10: 0.8586
 
-Precision@100: 0.0492
+Precision@100: 0.0113
 Recall@100: 1.0000
 
-[Mean] Reciprocal Rank: 0.5081
+[Mean] Reciprocal Rank: 0.6447
 
 ----------------------------------------------------
 
