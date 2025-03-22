@@ -1,5 +1,8 @@
 irvenv/
 
-.idea/
+.idea
 
-data/*
+models
+
+guide_notebooks
+

@@ -1,0 +1,23 @@
+Evaluation Results for distilbert-base-uncased model finetuned on short queries from scidocs dataset:
+normalized Discounted Cumulative Gain@10: 0.4639
+normalized Discounted Cumulative Gain@100: 0.6251
+
+[Mean] Average Precision@10: 0.3152
+[Mean] Average Precision@100: 0.3988
+
+Precision@10: 0.2868
+Recall@10: 0.5895
+
+Precision@100: 0.0492
+Recall@100: 1.0000
+
+[Mean] Reciprocal Rank: 0.5081
+
+----------------------------------------------------
+
+Explanation of metrics:
+NDCG@k (Normalized Discounted Cumulative Gain: Ranking Quality | Prioritizes highly relevant documents appearing earlier in the ranking.
+MAP (Mean Average Precision): Overall Relevance | Measures ranking precision across all relevant documents. Best for small-scale retrieval tasks.
+Precision@k: Relevance | Measures how many of the top-k documents are relevant. Works well in precision-sensitive applications.
+Recall@k: Coverage | Measures how many relevant documents appear in the top-k results. Important in recall-sensitive tasks.
+MRR (Mean Reciprocal Rank): Single Relevant Result | Focuses on ranking the first relevant document. Good for QA tasks.
