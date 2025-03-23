@@ -1,0 +1,23 @@
+Evaluation Results for distilbert-base-uncased model finetuned on medium queries from arguana dataset:
+normalized Discounted Cumulative Gain@10: 0.8623
+normalized Discounted Cumulative Gain@100: 0.8659
+
+[Mean] Average Precision@10: 0.8227
+[Mean] Average Precision@100: 0.8237
+
+Precision@10: 0.0986
+Recall@10: 0.9858
+
+Precision@100: 0.0100
+Recall@100: 1.0000
+
+[Mean] Reciprocal Rank: 0.8237
+
+----------------------------------------------------
+
+Explanation of metrics:
+NDCG@k (Normalized Discounted Cumulative Gain: Ranking Quality | Prioritizes highly relevant documents appearing earlier in the ranking.
+MAP (Mean Average Precision): Overall Relevance | Measures ranking precision across all relevant documents. Best for small-scale retrieval tasks.
+Precision@k: Relevance | Measures how many of the top-k documents are relevant. Works well in precision-sensitive applications.
+Recall@k: Coverage | Measures how many relevant documents appear in the top-k results. Important in recall-sensitive tasks.
+MRR (Mean Reciprocal Rank): Single Relevant Result | Focuses on ranking the first relevant document. Good for QA tasks.
