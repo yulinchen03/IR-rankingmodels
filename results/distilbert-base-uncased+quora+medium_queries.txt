@@ -1,4 +1,4 @@
-Evaluation Results for distilbert-base-uncased model finetuned on short queries from quora dataset:
+Evaluation Results for distilbert-base-uncased model finetuned on medium queries from quora dataset:
 normalized Discounted Cumulative Gain@10: 0.9045
 normalized Discounted Cumulative Gain@100: 0.9185
 
