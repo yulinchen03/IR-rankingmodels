@@ -6,7 +6,11 @@ class TripletRankerModel(nn.Module):
     def __init__(self, model_name):
         super(TripletRankerModel, self).__init__()
         self.model = AutoModel.from_pretrained(model_name)
-        self.linear = nn.Linear(768, 1)
+
+        # Get the hidden size from the model's configuration
+        hidden_size = self.model.config.hidden_size
+
+        self.linear = nn.Linear(hidden_size, 1)
         self.sigmoid = nn.Sigmoid()
 
     def forward(self, input_ids, attention_mask):
