@@ -1,0 +1,11 @@
+Query Length Statistics for scidocs (split test)
+count: 1000.0
+mean: 9.442
+std: 3.353488017256343
+min: 2.0
+25%: 7.0
+50%: 9.0
+75%: 11.0
+max: 25.0
+33rd_percentile: 8.0
+67th_percentile: 10.0

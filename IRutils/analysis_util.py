@@ -32,7 +32,7 @@ class QueryLengthAnalyzer:
 
     def compute_query_lengths(self):
         """
-        Compute the query length (number of words) for each query.9
+        Compute the query length (number of words) for each query.
         Adds a new column 'query_length' to the DataFrame.
         """
         self.df['query_length'] = self.df['query'].apply(lambda x: len(str(x).split()))
@@ -48,7 +48,7 @@ class QueryLengthAnalyzer:
         stats['67th_percentile'] = t2
         return stats
 
-    def plot_histogram(self, save_path=None):
+    def plot_histogram(self, show=True, save_path=None):
         """
         Plot a histogram with KDE of query lengths.
         """
@@ -59,9 +59,12 @@ class QueryLengthAnalyzer:
         plt.ylabel('Frequency')
         if save_path:
             plt.savefig(save_path, bbox_inches='tight')
-        plt.show()
+        if show:
+            plt.show()
+        else:
+            plt.close()
 
-    def plot_boxplot(self, save_path=None):
+    def plot_boxplot(self, show=True, save_path=None):
         """
         Plot a box plot of query lengths.
         """
@@ -71,7 +74,10 @@ class QueryLengthAnalyzer:
         plt.xlabel('Query Length (number of words)')
         if save_path:
             plt.savefig(save_path, bbox_inches='tight')
-        plt.show()
+        if show:
+            plt.show()
+        else:
+            plt.close()
 
     def get_thresholds(self):
         """

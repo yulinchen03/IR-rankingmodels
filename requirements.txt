@@ -56,3 +56,4 @@ tornado~=6.4.2
 Jinja2~=3.1.6
 filelock~=3.18.0
 tqdm
+beir~=2.1.0
