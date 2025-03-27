@@ -1,17 +1,17 @@
-Evaluation Results for distilbert-base-uncased model finetuned on medium queries from quora dataset:
-normalized Discounted Cumulative Gain@10: 0.8414
-normalized Discounted Cumulative Gain@100: 0.8627
+Evaluation Results for distilbert-base-uncased model finetuned on long queries from fiqa dataset:
+normalized Discounted Cumulative Gain@10: 0.4229
+normalized Discounted Cumulative Gain@100: 0.5214
 
-[Mean] Average Precision@10: 0.8133
-[Mean] Average Precision@100: 0.8207
+[Mean] Average Precision@10: 0.3003
+[Mean] Average Precision@100: 0.3371
 
-Precision@10: 0.1378
-Recall@10: 0.9050
+Precision@10: 0.1424
+Recall@10: 0.6907
 
-Precision@100: 0.0157
-Recall@100: 0.9959
+Precision@100: 0.0255
+Recall@100: 0.9896
 
-[Mean] Reciprocal Rank: 0.8242
+[Mean] Reciprocal Rank: 0.3743
 
 ----------------------------------------------------
 

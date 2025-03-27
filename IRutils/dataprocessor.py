@@ -28,10 +28,10 @@ class DataProcessor:
 
     def get_subset(self, min_len, max_len, full=False):
 
-        filtered_queries = {qid: q for qid, q in self.queries.items() if min_len <= len(q.split()) <= max_len}
+        filtered_queries = {qid: q for qid, q in self.queries.items() if min_len < len(q.split()) <= max_len}
 
         # Get the filtered query IDs based on length
-        filtered_query_ids = [qid for qid, q in self.queries.items() if min_len <= len(q.split()) <= max_len]
+        filtered_query_ids = [qid for qid, q in self.queries.items() if min_len < len(q.split()) <= max_len]
 
         # Filter qrels based on the filtered query IDs
         filtered_qrels = {qid: self.qrels[qid] for qid in filtered_query_ids if qid in self.qrels}
