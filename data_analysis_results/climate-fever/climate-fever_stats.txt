@@ -1,0 +1,11 @@
+Query Length Statistics for climate-fever (split test)
+count: 1535.0
+mean: 20.190879478827362
+std: 9.552744962500633
+min: 4.0
+25%: 13.0
+50%: 19.0
+75%: 26.0
+max: 67.0
+33rd_percentile: 15.0
+67th_percentile: 23.0

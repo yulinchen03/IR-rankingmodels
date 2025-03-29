@@ -1,0 +1,11 @@
+Query Length Statistics for quora (split test)
+count: 10000.0
+mean: 9.531
+std: 4.061611585179815
+min: 1.0
+25%: 7.0
+50%: 9.0
+75%: 11.0
+max: 43.0
+33rd_percentile: 8.0
+67th_percentile: 10.0

@@ -1,0 +1,11 @@
+Query Length Statistics for fiqa (split test)
+count: 648.0
+mean: 10.939814814814815
+std: 4.298494178984807
+min: 2.0
+25%: 8.0
+50%: 10.0
+75%: 14.0
+max: 31.0
+33rd_percentile: 9.0
+67th_percentile: 13.0

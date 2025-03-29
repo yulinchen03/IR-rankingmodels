@@ -1,0 +1,11 @@
+Query Length Statistics for fever (split test)
+count: 6666.0
+mean: 8.448994899489948
+std: 3.2057047393034948
+min: 2.0
+25%: 6.0
+50%: 8.0
+75%: 10.0
+max: 31.0
+33rd_percentile: 7.0
+67th_percentile: 9.0

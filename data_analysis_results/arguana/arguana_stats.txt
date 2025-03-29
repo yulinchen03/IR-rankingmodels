@@ -1,0 +1,11 @@
+Query Length Statistics for arguana (split test)
+count: 1406.0
+mean: 193.5533428165007
+std: 90.76100366330601
+min: 46.0
+25%: 134.0
+50%: 174.0
+75%: 230.0
+max: 868.0
+33rd_percentile: 147.0
+67th_percentile: 209.0

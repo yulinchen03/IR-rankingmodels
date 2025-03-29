@@ -1,0 +1,11 @@
+Query Length Statistics for nfcorpus (split test)
+count: 323.0
+mean: 3.2941176470588234
+std: 2.431073954030835
+min: 1.0
+25%: 1.0
+50%: 2.0
+75%: 5.0
+max: 11.0
+33rd_percentile: 2.0
+67th_percentile: 4.0
