@@ -1,0 +1,23 @@
+Evaluation Results for huawei-noah/TinyBERT_General_4L_312D model finetuned on short queries from fiqa dataset:
+normalized Discounted Cumulative Gain@10: 0.5321
+normalized Discounted Cumulative Gain@100: 0.6090
+
+[Mean] Average Precision@10: 0.4153
+[Mean] Average Precision@100: 0.4454
+
+Precision@10: 0.1668
+Recall@10: 0.7476
+
+Precision@100: 0.0254
+Recall@100: 0.9890
+
+[Mean] Reciprocal Rank: 0.5062
+
+----------------------------------------------------
+
+Explanation of metrics:
+NDCG@k (Normalized Discounted Cumulative Gain: Ranking Quality | Prioritizes highly relevant documents appearing earlier in the ranking.
+MAP (Mean Average Precision): Overall Relevance | Measures ranking precision across all relevant documents. Best for small-scale retrieval tasks.
+Precision@k: Relevance | Measures how many of the top-k documents are relevant. Works well in precision-sensitive applications.
+Recall@k: Coverage | Measures how many relevant documents appear in the top-k results. Important in recall-sensitive tasks.
+MRR (Mean Reciprocal Rank): Single Relevant Result | Focuses on ranking the first relevant document. Good for QA tasks.

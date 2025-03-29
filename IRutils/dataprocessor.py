@@ -36,17 +36,6 @@ class DataProcessor:
         # Filter qrels based on the filtered query IDs
         filtered_qrels = {qid: self.qrels[qid] for qid in filtered_query_ids if qid in self.qrels}
 
-        if full:
-            # Calculate sample size (one third)
-            sample_size = len(filtered_query_ids) // 3
-
-            # Randomly sample one third of the keys
-            sampled_ids = random.sample(filtered_query_ids, sample_size)
-
-            # Create a new dictionary with only the sampled items
-            filtered_queries = {k: filtered_queries[k] for k in sampled_ids}
-            filtered_qrels = {k: filtered_qrels[k] for k in sampled_ids}
-
         self.queries, self.qrels = filtered_queries, filtered_qrels
 
         return filtered_queries, filtered_qrels

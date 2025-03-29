@@ -1,17 +1,17 @@
-Evaluation Results for distilbert-base-uncased model finetuned on full queries from quora dataset:
-normalized Discounted Cumulative Gain@10: 0.9348
-normalized Discounted Cumulative Gain@100: 0.9378
+Evaluation Results for huawei-noah/TinyBERT_General_4L_312D model finetuned on full queries from fiqa dataset:
+normalized Discounted Cumulative Gain@10: 0.4813
+normalized Discounted Cumulative Gain@100: 0.5734
 
-[Mean] Average Precision@10: 0.9095
-[Mean] Average Precision@100: 0.9141
+[Mean] Average Precision@10: 0.3604
+[Mean] Average Precision@100: 0.3960
 
-Precision@10: 0.1518
-Recall@10: 0.9910
+Precision@10: 0.1522
+Recall@10: 0.7098
 
-Precision@100: 0.0163
-Recall@100: 0.9999
+Precision@100: 0.0258
+Recall@100: 0.9941
 
-[Mean] Reciprocal Rank: 0.9088
+[Mean] Reciprocal Rank: 0.4549
 
 ----------------------------------------------------
 

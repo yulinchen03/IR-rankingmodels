@@ -21,4 +21,4 @@ pip install -r requirements.txt
 ```
 
 ## Running your experiments
-Refer to [IR-experiment.ipynb](IR-experiment.ipynb) for details.
+Refer to [IR-experiment.ipynb](verbose_experiment.ipynb) for details.
