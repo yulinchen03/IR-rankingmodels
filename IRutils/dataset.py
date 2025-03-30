@@ -4,7 +4,7 @@ from tqdm import tqdm
 
 
 class TripletRankingDataset(Dataset):
-    def __init__(self, queries, documents, qrels, tokenizer, num_negatives, neg_sample_size=20, max_length=512):
+    def __init__(self, queries, documents, qrels, tokenizer, num_negatives, neg_sample_size=10, max_length=512):
         self.triplets = []
         self.num_negatives = num_negatives
 

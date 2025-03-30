@@ -19,6 +19,16 @@ class TripletRankerModel(nn.Module):
         logits = self.linear(outputs.last_hidden_state[:, 0, :])  # CLS token
         return self.sigmoid(logits)
 
+    def get_embedding(self, input_ids, attention_mask):
+        """
+        Returns the pooled embedding (e.g., CLS token) from the base model.
+        Used for calculating distances in triplet loss or for similarity in retrieval.
+        """
+        outputs = self.model(input_ids=input_ids, attention_mask=attention_mask)
+        # Get the CLS token embedding
+        pooled_output = outputs.last_hidden_state[:, 0, :]
+        return pooled_output
+
     def get_scores(self, input_ids, attention_mask):
         return self.forward(input_ids, attention_mask)
 

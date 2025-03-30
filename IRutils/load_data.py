@@ -111,23 +111,23 @@ def preprocess(queries, docs, qrels, model_name, length_setting, train_available
     print('Creating training dataset...')
     train_dataset = TripletRankingDataset(query_train, docs, qrel_train, tokenizer, num_negatives,
                                           max_length=max_len_doc)
-    train_loader = DataLoader(train_dataset, batch_size=8, shuffle=True)
+    train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True, num_workers=2, pin_memory=True)
 
     print('Creating validation dataset...')
     val_dataset = TripletRankingDataset(query_val, docs, qrel_val, tokenizer, num_negatives, max_length=max_len_doc)
-    val_loader = DataLoader(val_dataset, batch_size=8, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=16, shuffle=False, num_workers=2, pin_memory=True)
 
     print('Creating testing dataset...')
     if train_available:
         test_dataset = TripletRankingDataset(queries_test, docs_test, qrels_test, tokenizer, num_negatives,
                                              max_length=max_len_doc)
-        test_loader = DataLoader(test_dataset, batch_size=8, shuffle=True)
+        test_loader = DataLoader(test_dataset, batch_size=16, shuffle=False, num_workers=2, pin_memory=True)
 
         return train_loader, val_loader, test_loader, {}, {}
     else:
         test_dataset = TripletRankingDataset(query_test, docs, qrel_test, tokenizer, num_negatives,
                                              max_length=max_len_doc)
-        test_loader = DataLoader(test_dataset, batch_size=8, shuffle=True)
+        test_loader = DataLoader(test_dataset, batch_size=16, shuffle=False, num_workers=2, pin_memory=True)
 
         return train_loader, val_loader, test_loader, query_test, qrel_test
     # -----------------------------------------------------

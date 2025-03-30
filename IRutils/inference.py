@@ -3,6 +3,40 @@ from ir_measures import calc_aggregate
 from tqdm import tqdm
 from ir_measures import nDCG, AP, P, R, RR
 
+def write_results(metric_scores, save_path, model_name, dataset_name, length_setting):
+    # Save results to a file
+    with open(save_path, "w") as f:
+        f.write(f"Evaluation Results for {model_name} model finetuned on {length_setting} queries from {dataset_name} dataset:\n")
+        f.write(f"normalized Discounted Cumulative Gain@10: {metric_scores[nDCG @ 10]:.4f}\n")
+        f.write(f"normalized Discounted Cumulative Gain@100: {metric_scores[nDCG @ 100]:.4f}\n")
+        f.write(f"\n")
+        f.write(f"[Mean] Average Precision@10: {metric_scores[AP @ 10]:.4f}\n")
+        f.write(f"[Mean] Average Precision@100: {metric_scores[AP @ 100]:.4f}\n")
+        f.write(f"\n")
+        f.write(f"Precision@10: {metric_scores[P @ 10]:.4f}\n")
+        f.write(f"Recall@10: {metric_scores[R @ 10]:.4f}\n")
+        f.write(f"\n")
+        f.write(f"Precision@100: {metric_scores[P @ 100]:.4f}\n")
+        f.write(f"Recall@100: {metric_scores[R @ 100]:.4f}\n")
+        f.write(f"\n")
+        f.write(f"[Mean] Reciprocal Rank: {metric_scores[RR]:.4f}\n")
+        f.write(f"\n")
+        f.write(f"----------------------------------------------------\n")
+        f.write(f"\n")
+        f.write(f"Explanation of metrics:\n")
+        f.write(
+            f"NDCG@k (Normalized Discounted Cumulative Gain: Ranking Quality | Prioritizes highly relevant documents appearing earlier in the ranking.\n")
+        f.write(
+            f"MAP (Mean Average Precision): Overall Relevance | Measures ranking precision across all relevant documents. Best for small-scale retrieval tasks.\n")
+        f.write(
+            f"Precision@k: Relevance | Measures how many of the top-k documents are relevant. Works well in precision-sensitive applications.\n")
+        f.write(
+            f"Recall@k: Coverage | Measures how many relevant documents appear in the top-k results. Important in recall-sensitive tasks.\n")
+        f.write(
+            f"MRR (Mean Reciprocal Rank): Single Relevant Result | Focuses on ranking the first relevant document. Good for QA tasks.\n")
+
+    print(f'Successfully written results to {save_path}.')
+
 
 def evaluate(model, test_loader, device, qrels):
     model.eval()
