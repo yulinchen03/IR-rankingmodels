@@ -1,0 +1,35 @@
+Minimum: 1
+
+Maximum: 15
+
+Average: ~2.63
+
+Median: 2
+
+1: 220 queries
+
+2: 184 queries
+
+3: 103 queries
+
+4: 56 queries
+
+5: 29 queries
+
+6: 20 queries
+
+7: 13 queries
+
+8: 8 queries
+
+9: 3 queries
+
+10: 6 queries
+
+11: 1 query
+
+12: 2 queries
+
+13: 1 query
+
+15: 2 queries

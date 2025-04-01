@@ -1,39 +1,82 @@
 import torch
 from ir_measures import calc_aggregate
 from tqdm import tqdm
-from ir_measures import nDCG, AP, P, R, RR
+from ir_measures import nDCG, P, R, RR
 
 def write_results(metric_scores, save_path, model_name, dataset_name, length_setting):
+    """
+    Saves evaluation results to a file, focusing on key metrics, including low-k values.
+
+    Args:
+        metric_scores: A dictionary-like object containing calculated metric scores.
+                       Must include keys for: nDCG@3, nDCG@5, nDCG@10, RR, P@1, R@1, R@3, R@5, R@10.
+        save_path: Path to the file where results will be saved.
+        model_name: Name of the model being evaluated.
+        dataset_name: Name of the dataset used.
+        length_setting: Description of the query length focus (e.g., "short", "all", "ensemble").
+    """
+    # Define the required metric objects for key access
+    required_metrics = {
+        'nDCG@3': nDCG @ 3, 'nDCG@5': nDCG @ 5, 'nDCG@10': nDCG @ 10,
+        'MRR': RR,
+        'P@1': P @ 1,
+        'R@1': R @ 1, 'R@3': R @ 3, 'R@5': R @ 5, 'R@10': R @ 10
+    }
+
+    # Check if all required metric scores are present
+    scores = {}
+    missing_metrics = []
+    for name, metric_obj in required_metrics.items():
+        if metric_obj not in metric_scores:
+            missing_metrics.append(name)
+        else:
+            scores[name] = metric_scores[metric_obj]
+
+    if missing_metrics:
+        print(f"Error: Metric scores not found for: {', '.join(missing_metrics)}. "
+              f"Ensure your evaluate function calculates all required metrics.")
+        return # Exit if any required metric is missing
+
     # Save results to a file
     with open(save_path, "w") as f:
-        f.write(f"Evaluation Results for {model_name} model finetuned on {length_setting} queries from {dataset_name} dataset:\n")
-        f.write(f"normalized Discounted Cumulative Gain@10: {metric_scores[nDCG @ 10]:.4f}\n")
-        f.write(f"normalized Discounted Cumulative Gain@100: {metric_scores[nDCG @ 100]:.4f}\n")
+        f.write(f"Evaluation Results for {model_name} model ({length_setting}) on {dataset_name} dataset:\n")
+        f.write("----------------------------------------------------\n")
+
+        # --- Primary/Ranking Metrics ---
+        f.write(f"nDCG@3:  {scores['nDCG@3']:.4f}\n")
+        f.write(f"nDCG@5:  {scores['nDCG@5']:.4f}\n")
+        f.write(f"nDCG@10: {scores['nDCG@10']:.4f}\n")
+        f.write(f"MRR:     {scores['MRR']:.4f} ([Mean] Reciprocal Rank)\n")
         f.write(f"\n")
-        f.write(f"[Mean] Average Precision@10: {metric_scores[AP @ 10]:.4f}\n")
-        f.write(f"[Mean] Average Precision@100: {metric_scores[AP @ 100]:.4f}\n")
+
+        # --- Precision Metrics ---
+        f.write(f"P@1:     {scores['P@1']:.4f}\n")
         f.write(f"\n")
-        f.write(f"Precision@10: {metric_scores[P @ 10]:.4f}\n")
-        f.write(f"Recall@10: {metric_scores[R @ 10]:.4f}\n")
+
+        # --- Recall Metrics ---
+        f.write(f"R@1:     {scores['R@1']:.4f}\n")
+        f.write(f"R@3:     {scores['R@3']:.4f}\n")
+        f.write(f"R@5:     {scores['R@5']:.4f}\n")
+        f.write(f"R@10:    {scores['R@10']:.4f}\n")
         f.write(f"\n")
-        f.write(f"Precision@100: {metric_scores[P @ 100]:.4f}\n")
-        f.write(f"Recall@100: {metric_scores[R @ 100]:.4f}\n")
-        f.write(f"\n")
-        f.write(f"[Mean] Reciprocal Rank: {metric_scores[RR]:.4f}\n")
-        f.write(f"\n")
-        f.write(f"----------------------------------------------------\n")
-        f.write(f"\n")
-        f.write(f"Explanation of metrics:\n")
+
+        f.write("----------------------------------------------------\n")
+        f.write("\n")
+        f.write("Explanation of reported metrics:\n")
         f.write(
-            f"NDCG@k (Normalized Discounted Cumulative Gain: Ranking Quality | Prioritizes highly relevant documents appearing earlier in the ranking.\n")
+            "  nDCG@k: Measures ranking quality, rewarding highly relevant documents found earlier.\n"
+            "          Normalized for the number of relevant items per query. Good overall indicator.\n"
+        )
         f.write(
-            f"MAP (Mean Average Precision): Overall Relevance | Measures ranking precision across all relevant documents. Best for small-scale retrieval tasks.\n")
+            "  MRR:    Average reciprocal rank of the *first* relevant document. Crucial for sparse relevance.\n"
+        )
         f.write(
-            f"Precision@k: Relevance | Measures how many of the top-k documents are relevant. Works well in precision-sensitive applications.\n")
+            "  P@k:    Precision@k. Fraction of top k results that are relevant. P@1 is very important.\n"
+        )
         f.write(
-            f"Recall@k: Coverage | Measures how many relevant documents appear in the top-k results. Important in recall-sensitive tasks.\n")
-        f.write(
-            f"MRR (Mean Reciprocal Rank): Single Relevant Result | Focuses on ranking the first relevant document. Good for QA tasks.\n")
+            "  R@k:    Recall@k. Fraction of *all* relevant documents found in top k. Measures coverage.\n"
+            "          R@1, R@3, R@5 are useful for checking if the few relevant docs are found early.\n"
+        )
 
     print(f'Successfully written results to {save_path}.')
 
@@ -85,11 +128,10 @@ def evaluate(model, test_loader, device, qrels):
 
     # Calculate metrics
     metrics = [
-        nDCG @ 10, nDCG @ 100,
-        AP @ 10, AP @ 100,
-        P @ 10, R @ 10,
-        P @ 100, R @ 100,
-        RR
+        nDCG @ 3, nDCG @ 5, nDCG @ 10, # Added nDCG@3
+        RR,
+        P @ 1,
+        R @ 1, R @ 3, R @ 5, R @ 10    # Added R@1, R@3
     ]
 
     metric_scores = calc_aggregate(metrics, qrels, run)
@@ -155,11 +197,10 @@ def evaluate_average_ensemble(models, test_loader, device, qrels):
 
         # Calculate metrics
         metrics = [
-            nDCG @ 10, nDCG @ 100,
-            AP @ 10, AP @ 100,
-            P @ 10, R @ 10,
-            P @ 100, R @ 100,
-            RR
+            nDCG @ 3, nDCG @ 5, nDCG @ 10,  # Added nDCG@3
+            RR,
+            P @ 1,
+            R @ 1, R @ 3, R @ 5, R @ 10  # Added R@1, R@3
         ]
 
         metric_scores = calc_aggregate(metrics, qrels, run)
@@ -257,11 +298,10 @@ def evaluate_conditional_ensemble(models, t1, t2, test_loader, device, qrels, qu
 
     # Calculate metrics
     metrics = [
-        nDCG @ 10, nDCG @ 100,
-        AP @ 10, AP @ 100,
-        P @ 10, R @ 10,
-        P @ 100, R @ 100,
-        RR
+        nDCG @ 3, nDCG @ 5, nDCG @ 10,  # Added nDCG@3
+        RR,
+        P @ 1,
+        R @ 1, R @ 3, R @ 5, R @ 10  # Added R@1, R@3
     ]
 
     print("\nCalculating aggregate metrics...")
@@ -298,7 +338,7 @@ def evaluate_weighted_average_ensemble(models, # List of models [short, medium, 
     Returns:
         Dictionary of metric scores.
     """
-    ft_models = [models['short_queries.pth'], models['medium_queries.pth'], models['long_queries.pth']]
+    ft_models = [models['short'], models['medium'], models['long']]
 
     for model in ft_models:
         model.eval()
@@ -380,11 +420,10 @@ def evaluate_weighted_average_ensemble(models, # List of models [short, medium, 
 
     # Calculate metrics
     metrics = [
-        nDCG @ 10, nDCG @ 100,
-        AP @ 10, AP @ 100,
-        P @ 10, R @ 10,
-        P @ 100, R @ 100,
-        RR
+        nDCG @ 3, nDCG @ 5, nDCG @ 10,  # Added nDCG@3
+        RR,
+        P @ 1,
+        R @ 1, R @ 3, R @ 5, R @ 10  # Added R@1, R@3
     ]
 
     print("\nCalculating aggregate metrics...")

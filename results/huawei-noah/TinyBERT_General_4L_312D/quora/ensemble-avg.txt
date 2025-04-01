@@ -1,0 +1,25 @@
+Evaluation Results for huawei-noah/TinyBERT_General_4L_312D model (ensemble-average) on quora dataset:
+----------------------------------------------------
+nDCG@3:  0.8792
+nDCG@5:  0.8935
+nDCG@10: 0.9070
+MRR:     0.8899 ([Mean] Reciprocal Rank)
+
+P@1:     0.8340
+P@3:     0.3970
+P@5:     0.2640
+
+R@1:     0.7142
+R@3:     0.8874
+R@5:     0.9349
+R@10:    0.9796
+
+----------------------------------------------------
+
+Explanation of reported metrics:
+  nDCG@k: Measures ranking quality, rewarding highly relevant documents found earlier.
+          Normalized for the number of relevant items per query. Good overall indicator.
+  MRR:    Average reciprocal rank of the *first* relevant document. Crucial for sparse relevance.
+  P@k:    Precision@k. Fraction of top k results that are relevant. P@1 is very important.
+  R@k:    Recall@k. Fraction of *all* relevant documents found in top k. Measures coverage.
+          R@1, R@3, R@5 are useful for checking if the few relevant docs are found early.

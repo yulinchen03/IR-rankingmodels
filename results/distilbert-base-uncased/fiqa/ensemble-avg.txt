@@ -1,0 +1,25 @@
+Evaluation Results for distilbert-base-uncased model (ensemble-average) on fiqa dataset:
+----------------------------------------------------
+nDCG@3:  0.4044
+nDCG@5:  0.4552
+nDCG@10: 0.5374
+MRR:     0.5132 ([Mean] Reciprocal Rank)
+
+P@1:     0.3256
+P@3:     0.2639
+P@5:     0.2160
+
+R@1:     0.1992
+R@3:     0.4360
+R@5:     0.5640
+R@10:    0.7699
+
+----------------------------------------------------
+
+Explanation of reported metrics:
+  nDCG@k: Measures ranking quality, rewarding highly relevant documents found earlier.
+          Normalized for the number of relevant items per query. Good overall indicator.
+  MRR:    Average reciprocal rank of the *first* relevant document. Crucial for sparse relevance.
+  P@k:    Precision@k. Fraction of top k results that are relevant. P@1 is very important.
+  R@k:    Recall@k. Fraction of *all* relevant documents found in top k. Measures coverage.
+          R@1, R@3, R@5 are useful for checking if the few relevant docs are found early.

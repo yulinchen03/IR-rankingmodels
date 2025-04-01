@@ -2,13 +2,18 @@ import os
 import logging
 import torch
 from torch.optim import AdamW
-from ir_measures import nDCG, AP, P, R, RR
+from ir_measures import nDCG, P, R, RR
 from IRutils import models, train, inference
 from IRutils.load_data import load, preprocess
 
 
 def run(model_name, dataset_name, length_setting):
-    metrics = [nDCG @ 10, nDCG @ 100, AP @ 10, AP @ 100, P @ 10, R @ 10, P @ 100, R @ 100, RR]
+    metrics = [
+        nDCG @ 3, nDCG @ 5, nDCG @ 10, # Added nDCG@3
+        RR,
+        P @ 1, P @ 3, P @ 5,
+        R @ 1, R @ 3, R @ 5, R @ 10    # Added R@1, R@3
+    ]
 
     logging.disable(logging.WARNING)
 
@@ -19,7 +24,7 @@ def run(model_name, dataset_name, length_setting):
     print('Loading complete!')
 
     if train_available:
-        train_loader, val_loader, test_loader, split_queries_test, split_qrels_test = preprocess(queries, docs, qrels,
+        train_loader, val_loader, test_loader, split_queries_test, split_qrels_test, _, _ = preprocess(queries, docs, qrels,
                                                                                                  model_name,
                                                                                                  length_setting,
                                                                                                  train_available,
@@ -29,7 +34,7 @@ def run(model_name, dataset_name, length_setting):
                                                                                                  max_len_doc=max_len_doc,
                                                                                                  random_state=random_state)
     else:
-        train_loader, val_loader, test_loader, split_queries_test, split_qrels_test = preprocess(queries, docs, qrels,
+        train_loader, val_loader, test_loader, split_queries_test, split_qrels_test, _, _ = preprocess(queries, docs, qrels,
                                                                                                  model_name,
                                                                                                  length_setting,
                                                                                                  train_available,
@@ -53,8 +58,8 @@ def run(model_name, dataset_name, length_setting):
         model.load_state_dict(torch.load(model_path, map_location=device))
     else:
         # Train the model
-        # model = train.train_triplet_ranker(model, train_loader, val_loader, optimizer, device, model_path)
-        model = train.train_triplet_ranker_amp(model, train_loader, val_loader, optimizer, device, model_path)
+        model = train.train_triplet_ranker(model, train_loader, val_loader, optimizer, device, model_path)
+        # model = train.train_triplet_ranker_amp(model, train_loader, val_loader, optimizer, device, model_path) # amp enabled
 
     # Example usage (replace with your data and model)
     if train_available:
@@ -73,7 +78,7 @@ def run(model_name, dataset_name, length_setting):
 
 
 if __name__ == "__main__":
-    run_models = ['huawei-noah/TinyBERT_General_4L_312D', 'microsoft/MiniLM-L12-H384-uncased', 'distilbert-base-uncased']
+    run_models = ['distilroberta-base']
     run_datasets = ['fiqa', 'quora']
     run_length_settings = ['short', 'medium', 'long', 'full']
 

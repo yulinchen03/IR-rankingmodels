@@ -1,0 +1,21 @@
+Minimum: 1
+
+Maximum: 34
+
+Average: 1.63
+
+Median: 1
+
+1 relevant doc: 1533 queries
+
+2 relevant docs: 254 queries
+
+3 relevant docs: 82 queries
+
+4 relevant docs: 39 queries
+
+5 relevant docs: 27 queries
+
+6-10 relevant docs: decreasing frequency
+
+34 relevant docs: 2 queries

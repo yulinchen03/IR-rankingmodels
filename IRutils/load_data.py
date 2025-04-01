@@ -123,13 +123,13 @@ def preprocess(queries, docs, qrels, model_name, length_setting, train_available
                                              max_length=max_len_doc)
         test_loader = DataLoader(test_dataset, batch_size=16, shuffle=False, num_workers=2, pin_memory=True)
 
-        return train_loader, val_loader, test_loader, {}, {}
+        return train_loader, val_loader, test_loader, {}, {}, query_val, qrel_val
     else:
         test_dataset = TripletRankingDataset(query_test, docs, qrel_test, tokenizer, num_negatives,
                                              max_length=max_len_doc)
         test_loader = DataLoader(test_dataset, batch_size=16, shuffle=False, num_workers=2, pin_memory=True)
 
-        return train_loader, val_loader, test_loader, query_test, qrel_test
+        return train_loader, val_loader, test_loader, query_test, qrel_test, query_val, qrel_val
     # -----------------------------------------------------
 
 
