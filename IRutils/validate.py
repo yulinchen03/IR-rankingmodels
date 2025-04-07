@@ -19,19 +19,27 @@ def validate(model, val_loader, device, margin=1.0):
     with torch.no_grad():
 
         for batch in tqdm(val_loader, desc="Validation"):
-            anchor_inputs = batch["anchor_input_ids"].to(device)
-            anchor_masks = batch["anchor_attention_mask"].to(device)
-            positive_inputs = batch["positive_input_ids"].to(device)
-            positive_masks = batch["positive_attention_mask"].to(device)
-            negative_inputs = batch["negative_input_ids"].to(device)
-            negative_masks = batch["negative_attention_mask"].to(device)
+            query_inputs = batch["query_input_ids"].to(device)
+            query_masks = batch["query_attention_mask"].to(device)
+            positive_inputs = batch["pos_doc_input_ids"].to(device)
+            positive_masks = batch["pos_doc_attention_mask"].to(device)
+            negative_inputs = batch["neg_doc_input_ids"].to(device)
+            negative_masks = batch["neg_doc_attention_mask"].to(device)
 
-            anchor_embeddings = model(anchor_inputs, anchor_masks)
-            positive_embeddings = model(positive_inputs, positive_masks)
-            negative_embeddings = model(negative_inputs, negative_masks)
+            try:
+                query_embeddings = model.get_embedding(query_inputs, query_masks)
+                positive_embeddings = model.get_embedding(positive_inputs, positive_masks)
+                negative_embeddings = model.get_embedding(negative_inputs, negative_masks)
+            except AttributeError:
+                print(
+                    "Warning: model.get_embedding() not found, falling back to model(). Ensure model() returns corpus_embeddings.")
+                query_embeddings = model(query_inputs, query_masks)
+                positive_embeddings = model(positive_inputs, positive_masks)
+                negative_embeddings = model(negative_inputs, negative_masks)
 
-            positive_distances = torch.norm(anchor_embeddings - positive_embeddings, p=2, dim=1)
-            negative_distances = torch.norm(anchor_embeddings - negative_embeddings, p=2, dim=1)
+            # Calculate triplet loss
+            positive_distances = torch.norm(query_embeddings - positive_embeddings, p=2, dim=1)
+            negative_distances = torch.norm(query_embeddings - negative_embeddings, p=2, dim=1)
 
             loss = torch.relu(positive_distances - negative_distances + margin).mean()
             total_val_loss += loss.item()
@@ -44,7 +52,7 @@ def validate(model, val_loader, device, margin=1.0):
 def validate_amp(model, val_loader, device, margin=1.0, use_amp=False): # <-- Add use_amp flag
     """
     Validates a TripletRankerModel with optional AMP.
-    Assumes model() or model.get_embedding() returns embeddings.
+    Assumes model() or model.get_embedding() returns corpus_embeddings.
 
     Args:
         model: The TripletRankerModel to validate.
@@ -62,12 +70,12 @@ def validate_amp(model, val_loader, device, margin=1.0, use_amp=False): # <-- Ad
 
         for batch in tqdm(val_loader, desc="Validation"):
             # Move batch data to device
-            anchor_inputs = batch["anchor_input_ids"].to(device)
-            anchor_masks = batch["anchor_attention_mask"].to(device)
-            positive_inputs = batch["positive_input_ids"].to(device)
-            positive_masks = batch["positive_attention_mask"].to(device)
-            negative_inputs = batch["negative_input_ids"].to(device)
-            negative_masks = batch["negative_attention_mask"].to(device)
+            query_inputs = batch["query_input_ids"].to(device)
+            query_masks = batch["query_attention_mask"].to(device)
+            positive_inputs = batch["pos_doc_input_ids"].to(device)
+            positive_masks = batch["pos_doc_attention_mask"].to(device)
+            negative_inputs = batch["neg_doc_input_ids"].to(device)
+            negative_masks = batch["neg_doc_attention_mask"].to(device)
 
             # --- Wrap forward pass and loss calculation with autocast ---
             with autocast('cuda', enabled=use_amp):
@@ -76,17 +84,18 @@ def validate_amp(model, val_loader, device, margin=1.0, use_amp=False): # <-- Ad
                 # includes the final sigmoid layer not needed for distance loss.
                 # Ensure your TripletRankerModel has the get_embedding method.
                 try:
-                    anchor_embeddings = model.get_embedding(anchor_inputs, anchor_masks)
+                    query_embeddings = model.get_embedding(query_inputs, query_masks)
                     positive_embeddings = model.get_embedding(positive_inputs, positive_masks)
                     negative_embeddings = model.get_embedding(negative_inputs, negative_masks)
                 except AttributeError:
-                    print("Warning: model.get_embedding() not found, falling back to model(). Ensure model() returns embeddings.")
-                    anchor_embeddings = model(anchor_inputs, anchor_masks)
+                    print(
+                        "Warning: model.get_embedding() not found, falling back to model(). Ensure model() returns corpus_embeddings.")
+                    query_embeddings = model(query_inputs, query_masks)
                     positive_embeddings = model(positive_inputs, positive_masks)
                     negative_embeddings = model(negative_inputs, negative_masks)
 
-                positive_distances = torch.norm(anchor_embeddings - positive_embeddings, p=2, dim=1)
-                negative_distances = torch.norm(anchor_embeddings - negative_embeddings, p=2, dim=1)
+                positive_distances = torch.norm(query_embeddings - positive_embeddings, p=2, dim=1)
+                negative_distances = torch.norm(query_embeddings - negative_embeddings, p=2, dim=1)
 
                 # Calculate loss inside autocast context
                 loss = torch.relu(positive_distances - negative_distances + margin).mean()

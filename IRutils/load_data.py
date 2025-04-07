@@ -7,7 +7,7 @@ from torch.utils.data import DataLoader
 from transformers import AutoTokenizer
 
 from IRutils import dataprocessor
-from IRutils.dataset import TripletRankingDataset
+from IRutils.dataset import TripletRankingDataset, RankingDataset
 
 
 def calculate_percentiles(query_lengths):
@@ -17,7 +17,7 @@ def calculate_percentiles(query_lengths):
     return int(t1), int(t2)
 
 def load(dataset_name):
-    datasets = {'msmarco': ['train', 'dev'],
+    datasets = {'msmarco': ['dev', 'test'],
                 'hotpotqa': ['train', 'dev', 'test'],
                 'arguana': ['test'],
                 'quora': ['dev', 'test'],
@@ -41,8 +41,8 @@ def load(dataset_name):
         docs_test, queries_test, qrels_test = GenericDataLoader(data_folder=data_path).load(split="test")
         train_available = True
         print('Train and test set available!')
-
         return train_available, docs, queries, qrels, docs_test, queries_test, qrels_test
+
     else:
         # Load the dataset
         docs, queries, qrels = GenericDataLoader(data_folder=data_path).load(split="test")
@@ -51,7 +51,7 @@ def load(dataset_name):
         return train_available, docs, queries, qrels, {}, {}, {}
 
 
-def preprocess(queries, docs, qrels, model_name, length_setting, train_available, queries_test=None, docs_test=None, qrels_test=None, max_len_doc=512, random_state=42):
+def preprocess(queries, docs, qrels, model_name, length_setting, train_available, queries_test=None, qrels_test=None, max_len_doc=512, random_state=42, for_eval=False):
     # Initialize data processor and determine threshold
     # -----------------------------------------------------
     dp = dataprocessor.DataProcessor(queries, docs, qrels)
@@ -108,27 +108,27 @@ def preprocess(queries, docs, qrels, model_name, length_setting, train_available
 
     # Create dataloaders
     # -----------------------------------------------------
-    print('Creating training dataset...')
-    train_dataset = TripletRankingDataset(query_train, docs, qrel_train, tokenizer, num_negatives,
-                                          max_length=max_len_doc)
-    train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True, num_workers=2, pin_memory=True)
+    if not for_eval:
+        print('Creating training dataset...')
+        train_dataset = TripletRankingDataset(query_train, docs, qrel_train, tokenizer, num_negatives,
+                                              max_length=max_len_doc)
+        train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True, num_workers=2, pin_memory=True)
+    else:
+        print('Skipping train set preparation...')
+        train_loader = None
 
     print('Creating validation dataset...')
     val_dataset = TripletRankingDataset(query_val, docs, qrel_val, tokenizer, num_negatives, max_length=max_len_doc)
     val_loader = DataLoader(val_dataset, batch_size=16, shuffle=False, num_workers=2, pin_memory=True)
 
-    print('Creating testing dataset...')
+    print('Creating test dataset...')
     if train_available:
-        test_dataset = TripletRankingDataset(queries_test, docs_test, qrels_test, tokenizer, num_negatives,
-                                             max_length=max_len_doc)
+        test_dataset = RankingDataset(queries_test, docs, qrels_test, tokenizer)  # query-doc instead of triplets
         test_loader = DataLoader(test_dataset, batch_size=16, shuffle=False, num_workers=2, pin_memory=True)
-
         return train_loader, val_loader, test_loader, {}, {}, query_val, qrel_val
     else:
-        test_dataset = TripletRankingDataset(query_test, docs, qrel_test, tokenizer, num_negatives,
-                                             max_length=max_len_doc)
+        test_dataset = RankingDataset(query_test, docs, qrel_test, tokenizer)  # query-doc instead of triplets
         test_loader = DataLoader(test_dataset, batch_size=16, shuffle=False, num_workers=2, pin_memory=True)
-
         return train_loader, val_loader, test_loader, query_test, qrel_test, query_val, qrel_val
     # -----------------------------------------------------
 

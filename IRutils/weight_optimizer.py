@@ -41,23 +41,23 @@ def precompute_validation_scores(models, val_loader, device):
             neg_dids = batch["neg_did"]
 
             # Prepare inputs once per batch
-            anchor_inputs = batch["anchor_input_ids"].to(device)
-            anchor_masks = batch["anchor_attention_mask"].to(device)
-            positive_inputs = batch["positive_input_ids"].to(device)
-            positive_masks = batch["positive_attention_mask"].to(device)
-            negative_inputs = batch["negative_input_ids"].to(device)
-            negative_masks = batch["negative_attention_mask"].to(device)
+            query_inputs = batch["query_input_ids"].to(device)
+            query_masks = batch["query_attention_mask"].to(device)
+            positive_inputs = batch["pos_doc_input_ids"].to(device)
+            positive_masks = batch["pos_doc_attention_mask"].to(device)
+            negative_inputs = batch["neg_doc_input_ids"].to(device)
+            negative_masks = batch["neg_doc_attention_mask"].to(device)
 
             batch_pos_scores = []
             batch_neg_scores = []
 
             for model in model_list:
-                anchor_embeddings = model(anchor_inputs, anchor_masks)
+                query_embedding = model(query_inputs, query_masks)
                 positive_embeddings = model(positive_inputs, positive_masks)
                 negative_embeddings = model(negative_inputs, negative_masks)
 
-                pos_distances = torch.norm(anchor_embeddings - positive_embeddings, p=2, dim=1)
-                neg_distances = torch.norm(anchor_embeddings - negative_embeddings, p=2, dim=1)
+                pos_distances = torch.norm(query_embedding - positive_embeddings, p=2, dim=1)
+                neg_distances = torch.norm(query_embedding - negative_embeddings, p=2, dim=1)
 
                 # Store negative distances as scores
                 batch_pos_scores.append(-pos_distances.cpu().numpy())

@@ -33,11 +33,12 @@ class TripletRankerModel(nn.Module):
         return self.forward(input_ids, attention_mask)
 
 
-def load_model(path, model_name, device):
+def load_model(path, model_name, device, eval=True):
     model = TripletRankerModel(model_name).to(device=device)
     model.load_state_dict(torch.load(path, map_location=device))
     model.to(device)
-    model.eval()
+    if eval:
+        model.eval()
     return model
 
 

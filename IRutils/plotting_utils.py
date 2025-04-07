@@ -7,23 +7,23 @@ import re
 
 # --- Plotting Configuration ---
 # Define the exact order and names for metrics in the plot
-METRICS_TO_PLOT_ORDER = ['nDCG@3', 'nDCG@5', 'nDCG@10', 'MRR',
-                         'P@1', 'P@3', 'P@5',
-                         'R@1', 'R@3', 'R@5', 'R@10']
+METRICS_TO_PLOT_ORDER = ['nDCG@100', 'RR', 'R@100']
 
 # EVAL_METHODS_PLOT and PLOT_COLORS remain the same
 EVAL_METHODS_PLOT = {
-    'baseline': 'baseline_full.txt',
-    'ens-avg': 'ensemble_average.txt',
-    'ens-select': 'ensemble_conditional.txt',
-    'ens-weighted': 'ensemble_weighted_avg.txt'
+    'baseline': 'baseline.txt',
+    'ens-avg': 'ensemble-avg.txt',
+    'ens-select': 'ensemble-selective.txt',
+    'ens-weighted': 'ensemble-weighted.txt',
+    'ens-weighted-learned': 'ensemble-learned_weighted.txt'
 }
 
 PLOT_COLORS = {
     'Baseline': '#1f77b4',  # Muted Blue
     'Avg Ens': '#ff7f0e',   # Safety Orange
     'Cond Ens': '#2ca02c',  # Cooked Asparagus Green
-    'Wgt Ens': '#d62728'   # Brick Red
+    'Wgt Ens': '#d62728',   # Brick Red
+    'Wgt L Ens': '#FFFF00' # yellow
 }
 
 
@@ -79,7 +79,7 @@ def create_comparison_plot(plot_data, metrics, model_name, dataset_name, save_di
 
     Args:
         plot_data (dict): Dict mapping method names (e.g., 'Baseline') to dicts
-                          of their scores ({'nDCG@10': 0.5, ...}).
+                          of their scores ({'nDCG@100': 0.5, ...}).
         metrics (list): List of metric names defining the order on the x-axis.
         model_name (str): Name of the model for the plot title.
         dataset_name (str): Name of the dataset for the plot title.

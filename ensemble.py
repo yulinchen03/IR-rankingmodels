@@ -4,15 +4,14 @@ import torch
 import logging
 import optuna  # Import optuna for logging control
 
-# Assuming IRutils is importable (e.g., in the same directory or installed)
 from IRutils.load_data import calculate_percentiles, load, preprocess
-from IRutils.inference import evaluate, evaluate_average_ensemble, evaluate_conditional_ensemble, evaluate_weighted_average_ensemble, write_results
+from IRutils.inference import *
 from IRutils.models import load_model, load_models
 from IRutils.plotting_utils import create_comparison_plot
 from IRutils.weight_optimizer import precompute_validation_scores, find_optimal_weights_config
 from ir_measures import nDCG, P, R, RR
 
-METRICS = [nDCG @ 3, nDCG @ 5, nDCG @ 10, RR, P @ 1, R @ 1, R @ 3, R @ 5, R @ 10]
+METRICS = [nDCG @ 10, RR, P @ 1, R @ 10]
 MAX_LEN_DOC = 512
 RANDOM_STATE = 42
 METRIC_TO_OPTIMIZE_WEIGHTS = nDCG @ 10 # Choose the metric to optimize weights for
@@ -61,24 +60,18 @@ def run(model_name, dataset_name):
         if train_available:
             train_loader, val_loader, test_loader, split_queries_test, split_qrels_test, query_val, qrels_val = preprocess(
                 queries, docs, qrels, model_name, 'full', train_available,
-                queries_test=queries_test, docs_test=docs_test, qrels_test=qrels_test,
-                max_len_doc=MAX_LEN_DOC, random_state=RANDOM_STATE
+                queries_test=queries_test, qrels_test=qrels_test,
+                max_len_doc=MAX_LEN_DOC, random_state=RANDOM_STATE, for_eval=True
             )
         else:
              # If no train split, validation comes from the main set, test is the rest
-             # Note: Original notebook logic reused test_loader/split_qrels_test for both baseline and ensembles.
-             # Ensure preprocess handles this split correctly. The current IRutils seems designed for train/val/test or train_test_split.
-             # We will assume preprocess correctly gives us a val_loader and test_loader derived from the input queries/qrels.
-             # Let's call preprocess once to get all splits needed.
-             # We pass 'full' to ensure it processes all queries initially.
             train_loader, val_loader, test_loader, split_queries_test, split_qrels_test, query_val, qrels_val = preprocess(
                 queries, docs, qrels, model_name, 'full', train_available,
-                max_len_doc=MAX_LEN_DOC, random_state=RANDOM_STATE
+                max_len_doc=MAX_LEN_DOC, random_state=RANDOM_STATE, for_eval=True
             )
             # If no train_available, the 'test' data used later corresponds to split_queries_test/split_qrels_test
             queries_test = split_queries_test # Use these for ensemble methods if no predefined test set
             qrels_test = split_qrels_test
-
 
         print('Preprocessing complete!')
 
@@ -110,21 +103,22 @@ def run(model_name, dataset_name):
     # --- 3. Evaluate Baseline Model ---
     print("\n--- Evaluating Baseline Model (full_queries) ---")
     try:
-        model_path_baseline = os.path.join(model_dir, f'{length_setting_baseline}_queries.pth')
+        model_path_baseline = os.path.join(model_dir, f'full_queries.pth')
         if not os.path.exists(model_path_baseline):
              print(f"Baseline model not found at {model_path_baseline}. Skipping baseline evaluation.")
         else:
             model_baseline = load_model(model_path_baseline, model_name, device)
-            metric_scores_baseline = evaluate(model_baseline, test_loader, device, final_test_qrels)
+            baseline_metrics, baseline_per_query, baseline_run = evaluate(model_baseline, test_loader, device, final_test_qrels)
+            print(baseline_metrics)
 
             print("Baseline Scores:")
             for metric in METRICS:
-                print(f'  Metric {metric} score: {metric_scores_baseline.get(metric, float("nan")):.4f}')
-            results['baseline'] = metric_scores_baseline
+                print(f'  Metric {metric} score: {baseline_metrics.get(metric, float("nan")):.4f}')
+            results['baseline'] = baseline_metrics
 
             # Save baseline results
             save_path_baseline = os.path.join(save_dir, 'baseline.txt')
-            write_results(metric_scores_baseline, save_path_baseline, model_name, dataset_name, length_setting_baseline)
+            write_results(baseline_metrics, save_path_baseline, model_name, dataset_name, length_setting_baseline)
             print(f"Baseline results saved to {save_path_baseline}")
             del model_baseline # Free memory
             torch.cuda.empty_cache() # Clear cache if using GPU
@@ -135,14 +129,14 @@ def run(model_name, dataset_name):
     # --- 4. Evaluate Ensemble - Average ---
     print("\n--- Evaluating Ensemble (Average) ---")
     try:
-        metric_scores_avg = evaluate_average_ensemble(ensemble_models, test_loader, device, final_test_qrels)
+        avg_metrics, avg_per_query, avg_run = evaluate_average_ensemble(ensemble_models, test_loader, device, final_test_qrels)
         print("Ensemble Average Scores:")
         for metric in METRICS:
-            print(f'  Metric {metric} score: {metric_scores_avg.get(metric, float("nan")):.4f}')
-        results['ens-avg'] = metric_scores_avg
+            print(f'  Metric {metric} score: {avg_metrics.get(metric, float("nan")):.4f}')
+        results['ens-avg'] = avg_metrics
 
         save_path_avg = os.path.join(save_dir, 'ensemble-avg.txt')
-        write_results(metric_scores_avg, save_path_avg, model_name, dataset_name, "ensemble-average")
+        write_results(avg_metrics, save_path_avg, model_name, dataset_name, "ensemble-average")
         print(f"Ensemble average results saved to {save_path_avg}")
     except Exception as e:
         print(f"Error during average ensemble evaluation: {e}")
@@ -150,14 +144,14 @@ def run(model_name, dataset_name):
     # --- 5. Evaluate Ensemble - Selective ---
     print("\n--- Evaluating Ensemble (Selective) ---")
     try:
-        metric_scores_select = evaluate_conditional_ensemble(ensemble_models, t1, t2, test_loader, device, final_test_qrels, final_test_queries)
+        cond_metrics, cond_per_query, cond_run = evaluate_conditional_ensemble(ensemble_models, t1, t2, test_loader, device, final_test_qrels, final_test_queries)
         print("Ensemble Selective Scores:")
         for metric in METRICS:
-            print(f'  Metric {metric} score: {metric_scores_select.get(metric, float("nan")):.4f}')
-        results['ens-select'] = metric_scores_select
+            print(f'  Metric {metric} score: {cond_metrics.get(metric, float("nan")):.4f}')
+        results['ens-select'] = cond_metrics
 
         save_path_select = os.path.join(save_dir, 'ensemble-selective.txt')
-        write_results(metric_scores_select, save_path_select, model_name, dataset_name, "ensemble-selective")
+        write_results(cond_metrics, save_path_select, model_name, dataset_name, "ensemble-selective")
         print(f"Ensemble selective results saved to {save_path_select}")
     except Exception as e:
         print(f"Error during selective ensemble evaluation: {e}")
@@ -168,19 +162,22 @@ def run(model_name, dataset_name):
     try:
         # Using the fixed weights from the notebook
         weights_config_fixed = {
-            'short': [0.6, 0.2, 0.2], # Weights for [short, medium, long] models when query is short
-            'medium': [0.2, 0.6, 0.2],# Weights when query is medium
-            'long': [0.2, 0.2, 0.6]   # Weights when query is long
+            'short': [0.5, 0.25, 0.25], # Weights for [short, medium, long] models when query is short
+            'medium': [0.25, 0.5, 0.25],# Weights when query is medium
+            'long': [0.25, 0.25, 0.5]   # Weights when query is long
         }
         print(f"Using fixed weights: {weights_config_fixed}")
-        metric_scores_weighted = evaluate_weighted_average_ensemble(ensemble_models, weights_config_fixed, t1, t2, test_loader, device, final_test_qrels, final_test_queries)
+        weighted_metrics, weighted_per_query, weighted_run = evaluate_weighted_average_ensemble(ensemble_models, weights_config_fixed,
+                                                                                                t1, t2, test_loader,
+                                                                                                device, final_test_qrels,
+                                                                                                final_test_queries)
         print("Ensemble Weighted (Fixed) Scores:")
         for metric in METRICS:
-            print(f'  Metric {metric} score: {metric_scores_weighted.get(metric, float("nan")):.4f}')
-        results['ens-weighted'] = metric_scores_weighted
+            print(f'  Metric {metric} score: {weighted_metrics.get(metric, float("nan")):.4f}')
+        results['ens-weighted'] = weighted_metrics
 
         save_path_weighted = os.path.join(save_dir, 'ensemble-weighted.txt')
-        write_results(metric_scores_weighted, save_path_weighted, model_name, dataset_name, "ensemble-weighted-fixed")
+        write_results(weighted_metrics, save_path_weighted, model_name, dataset_name, "ensemble-weighted-fixed")
         print(f"Ensemble weighted (fixed) results saved to {save_path_weighted}")
     except Exception as e:
         print(f"Error during fixed weighted ensemble evaluation: {e}")
@@ -214,16 +211,20 @@ def run(model_name, dataset_name):
 
             # Evaluate on the TEST set using the single learned weights config
             print("\nEvaluating on TEST set using LEARNED weights configuration...")
-            metric_scores_learned_w = evaluate_weighted_average_ensemble(ensemble_models, learned_weights_config, t1, t2, test_loader, device, final_test_qrels, final_test_queries)
+            learn_weighted_metrics, learn_weighted_per_query, learn_weighted_run = evaluate_weighted_average_ensemble(ensemble_models,
+                                                                                                    learned_weights_config,
+                                                                                                    t1, t2, test_loader,
+                                                                                                    device, final_test_qrels,
+                                                                                                    final_test_queries)
 
             print("\nFinal Test Set Performance with Learned Weights:")
             for metric in METRICS:
-                 print(f'  Metric {metric} score: {metric_scores_learned_w.get(metric, float("nan")):.4f}')
-            results['ens-learned-weighted'] = metric_scores_learned_w
+                 print(f'  Metric {metric} score: {learn_weighted_metrics.get(metric, float("nan")):.4f}')
+            results['ens-learned-weighted'] = learn_weighted_metrics
 
             # Save learned weighted results
             save_path_learned = os.path.join(save_dir, 'ensemble-weighted-reg.txt')
-            write_results(metric_scores_learned_w, save_path_learned, model_name, dataset_name, "learned-weighted-config")
+            write_results(learn_weighted_metrics, save_path_learned, model_name, dataset_name, "learned-weighted-config")
             print(f"Ensemble learned weighted results saved to {save_path_learned}")
 
         except Exception as e:
@@ -246,11 +247,37 @@ def run(model_name, dataset_name):
 
     print(f"\n--- Finished Ensemble Evaluation for {model_name} on {dataset_name} ---")
 
+    # Perform t-tests between baseline and all methods
+    metrics_to_test = [nDCG @ 100, RR, R @ 100]
+    model_names = ["Average Ensemble", "Conditional Ensemble", "Weighted Ensemble", "Regression Weighted Ensemble"]
+    model_results = [
+        (avg_metrics, avg_per_query, avg_run),
+        (cond_metrics, cond_per_query, cond_run),
+        (weighted_metrics, weighted_per_query, weighted_run),
+        (learn_weighted_metrics, learn_weighted_per_query, learn_weighted_run)
+    ]
+
+    # --- 9. Run t-tests and save results ---
+    ttest_df = compare_models_with_ttest(
+        (baseline_metrics, baseline_per_query, baseline_run),
+        model_results,
+        metrics_to_test,
+        model_names
+    )
+
+    ttest_save_path = os.path.join(save_dir, 'ttest_results.txt')
+    # Save t-test results
+    write_ttest_results(ttest_df, ttest_save_path, "Baseline")
+
+    # You can also print the DataFrame for a quick view
+    print("\nT-Test Results Summary:")
+    print(ttest_df[['Model', 'Metric', 'P-Value', 'Significant', 'Improvement %']])
+
 
 if __name__ == "__main__":
     # Define the models and datasets to run
-    run_models = ['huawei-noah/TinyBERT_General_4L_312D', 'microsoft/MiniLM-L12-H384-uncased', 'distilbert-base-uncased', 'distilroberta-base']
-    run_datasets = ['quora', 'fiqa']
+    run_models = ['microsoft/MiniLM-L12-H384-uncased', 'distilbert-base-uncased', 'distilroberta-base-uncased']
+    run_datasets = ['fiqa', 'quora']
 
     # Example for multiple runs (uncomment above lines and comment single run lines)
     print("Starting ensemble evaluation runs...")

@@ -30,22 +30,29 @@ def train_triplet_ranker(model, train_loader, val_loader, optimizer, device, sav
     while epoch < epochs:
         total_loss = 0.
         for batch in tqdm(train_loader, desc=f"Epoch {epoch + 1}/{epochs} (Training)"):
-            anchor_inputs = batch["anchor_input_ids"].to(device)
-            anchor_masks = batch["anchor_attention_mask"].to(device)
-            positive_inputs = batch["positive_input_ids"].to(device)
-            positive_masks = batch["positive_attention_mask"].to(device)
-            negative_inputs = batch["negative_input_ids"].to(device)
-            negative_masks = batch["negative_attention_mask"].to(device)
+            query_inputs = batch["query_input_ids"].to(device)
+            query_masks = batch["query_attention_mask"].to(device)
+            positive_inputs = batch["pos_doc_input_ids"].to(device)
+            positive_masks = batch["pos_doc_attention_mask"].to(device)
+            negative_inputs = batch["neg_doc_input_ids"].to(device)
+            negative_masks = batch["neg_doc_attention_mask"].to(device)
 
             optimizer.zero_grad()
 
-            anchor_embeddings = model(anchor_inputs, anchor_masks)
-            positive_embeddings = model(positive_inputs, positive_masks)
-            negative_embeddings = model(negative_inputs, negative_masks)
+            try:
+                query_embeddings = model.get_embedding(query_inputs, query_masks)
+                positive_embeddings = model.get_embedding(positive_inputs, positive_masks)
+                negative_embeddings = model.get_embedding(negative_inputs, negative_masks)
+            except AttributeError:
+                print(
+                    "Warning: model.get_embedding() not found, falling back to model(). Ensure model() returns corpus_embeddings.")
+                query_embeddings = model(query_inputs, query_masks)
+                positive_embeddings = model(positive_inputs, positive_masks)
+                negative_embeddings = model(negative_inputs, negative_masks)
 
             # Calculate triplet loss
-            positive_distances = torch.norm(anchor_embeddings - positive_embeddings, p=2, dim=1)
-            negative_distances = torch.norm(anchor_embeddings - negative_embeddings, p=2, dim=1)
+            positive_distances = torch.norm(query_embeddings - positive_embeddings, p=2, dim=1)
+            negative_distances = torch.norm(query_embeddings - negative_embeddings, p=2, dim=1)
 
             loss = torch.relu(positive_distances - negative_distances + margin).mean()
 
@@ -108,12 +115,12 @@ def train_triplet_ranker_amp(model, train_loader, val_loader, optimizer, device,
         # --- Training Loop ---
         for batch in tqdm(train_loader, desc=f"Epoch {epoch+1}/{epochs} (Training)"):
             # Move batch data to device
-            anchor_inputs = batch["anchor_input_ids"].to(device)
-            anchor_masks = batch["anchor_attention_mask"].to(device)
-            positive_inputs = batch["positive_input_ids"].to(device)
-            positive_masks = batch["positive_attention_mask"].to(device)
-            negative_inputs = batch["negative_input_ids"].to(device)
-            negative_masks = batch["negative_attention_mask"].to(device)
+            query_inputs = batch["query_input_ids"].to(device)
+            query_masks = batch["query_attention_mask"].to(device)
+            positive_inputs = batch["pos_doc_input_ids"].to(device)
+            positive_masks = batch["pos_doc_attention_mask"].to(device)
+            negative_inputs = batch["neg_doc_input_ids"].to(device)
+            negative_masks = batch["neg_doc_attention_mask"].to(device)
 
             optimizer.zero_grad()
 
@@ -122,19 +129,18 @@ def train_triplet_ranker_amp(model, train_loader, val_loader, optimizer, device,
                 # Ensure you use the same method (model() or get_embedding()) as in validate
                 # Using get_embedding here for consistency with validate's preference
                 try:
-                    anchor_embeddings = model.get_embedding(anchor_inputs, anchor_masks)
+                    query_embeddings = model.get_embedding(query_inputs, query_masks)
                     positive_embeddings = model.get_embedding(positive_inputs, positive_masks)
                     negative_embeddings = model.get_embedding(negative_inputs, negative_masks)
                 except AttributeError:
-                     print("Warning: model.get_embedding() not found, falling back to model(). Ensure model() returns embeddings.")
-                     anchor_embeddings = model(anchor_inputs, anchor_masks)
+                     print("Warning: model.get_embedding() not found, falling back to model(). Ensure model() returns corpus_embeddings.")
+                     query_embeddings = model(query_inputs, query_masks)
                      positive_embeddings = model(positive_inputs, positive_masks)
                      negative_embeddings = model(negative_inputs, negative_masks)
 
-
                 # --- Calculate triplet loss EXACTLY as in validate.py ---
-                positive_distances = torch.norm(anchor_embeddings - positive_embeddings, p=2, dim=1)
-                negative_distances = torch.norm(anchor_embeddings - negative_embeddings, p=2, dim=1)
+                positive_distances = torch.norm(query_embeddings - positive_embeddings, p=2, dim=1)
+                negative_distances = torch.norm(query_embeddings - negative_embeddings, p=2, dim=1)
                 loss = torch.relu(positive_distances - negative_distances + loss_margin).mean()
                 # --- End loss calculation ---
             # --- End AMP autocast block ---

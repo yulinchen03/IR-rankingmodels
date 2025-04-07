@@ -3,16 +3,16 @@ import logging
 import torch
 from torch.optim import AdamW
 from ir_measures import nDCG, P, R, RR
-from IRutils import models, train, inference
+from IRutils import models, train
 from IRutils.load_data import load, preprocess
 
 
 def run(model_name, dataset_name, length_setting):
     metrics = [
-        nDCG @ 3, nDCG @ 5, nDCG @ 10, # Added nDCG@3
+        nDCG @ 10, # Added nDCG@3
         RR,
-        P @ 1, P @ 3, P @ 5,
-        R @ 1, R @ 3, R @ 5, R @ 10    # Added R@1, R@3
+        P @ 1,
+        R @ 10    # Added R@1, R@3
     ]
 
     logging.disable(logging.WARNING)
@@ -29,7 +29,6 @@ def run(model_name, dataset_name, length_setting):
                                                                                                  length_setting,
                                                                                                  train_available,
                                                                                                  queries_test=queries_test,
-                                                                                                 docs_test=docs_test,
                                                                                                  qrels_test=qrels_test,
                                                                                                  max_len_doc=max_len_doc,
                                                                                                  random_state=random_state)
@@ -58,34 +57,34 @@ def run(model_name, dataset_name, length_setting):
         model.load_state_dict(torch.load(model_path, map_location=device))
     else:
         # Train the model
-        model = train.train_triplet_ranker(model, train_loader, val_loader, optimizer, device, model_path)
-        # model = train.train_triplet_ranker_amp(model, train_loader, val_loader, optimizer, device, model_path) # amp enabled
-
-    # Example usage (replace with your data and model)
-    if train_available:
-        metric_scores = inference.evaluate(model, test_loader, device, qrels_test)
-    else:
-        metric_scores = inference.evaluate(model, test_loader, device, split_qrels_test)
-
-    for metric in metrics:
-        print(f'Metric {metric} score: {metric_scores[metric]:.4f}')
-
-    save_dir = f"results/{model_name}/{dataset_name}"
-    os.makedirs(save_dir, exist_ok=True)
-    save_path = os.path.join(save_dir, f'{length_setting}_queries.txt')
-
-    inference.write_results(metric_scores, save_path, model_name, dataset_name, length_setting)
+        # model = train.train_triplet_ranker(model, train_loader, val_loader, optimizer, device, model_path)
+        model = train.train_triplet_ranker_amp(model, train_loader, val_loader, optimizer, device, model_path) # amp enabled
+    print('Run complete!')
 
 
 if __name__ == "__main__":
     run_models = ['distilroberta-base']
     run_datasets = ['fiqa', 'quora']
     run_length_settings = ['short', 'medium', 'long', 'full']
+    current_run = 0
 
-    # 24 runs
+    # Example for multiple runs (uncomment above lines and comment single run lines)
+    print("Starting training runs...")
+    total_runs = len(run_models) * len(run_datasets) * len(run_length_settings)
+
     for model in run_models:
         for dataset in run_datasets:
             for length in run_length_settings:
-                print(f'Now training model {model} on dataset {dataset} for {length} query lengths...')
-                run(model, dataset, length)
+                current_run += 1
+                print(f"\n>>> Starting Run {current_run}/{total_runs} <<<")
+                try:
+                    print(f'Now training model {model} on dataset {dataset} for {length} query lengths...')
+                    run(model, dataset, length)
+                except Exception as e:
+                    print(f"!!! CRITICAL ERROR during run for {model} on {dataset}: {e} !!!")
+                    print("!!! Skipping to next run !!!")
+
+                # Optional: Add delay or clear memory if needed between runs
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
 
