@@ -261,7 +261,7 @@ def run(model_name, dataset_name):
     ttest_df = compare_models_with_ttest(
         (baseline_metrics, baseline_per_query, baseline_run),
         model_results,
-        metrics_to_test,
+        METRICS,
         model_names
     )
 
@@ -272,6 +272,7 @@ def run(model_name, dataset_name):
     # You can also print the DataFrame for a quick view
     print("\nT-Test Results Summary:")
     print(ttest_df[['Model', 'Metric', 'P-Value', 'Significant', 'Improvement %']])
+    # ---------------------------------------------------------------
 
 
 if __name__ == "__main__":

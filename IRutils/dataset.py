@@ -1,6 +1,7 @@
 # --- START OF FILE dataset.py ---
 
 import random
+import time
 from typing import Dict, Union, List, Optional
 
 import torch
@@ -185,113 +186,140 @@ class RankingDataset(Dataset):
 
 
 
-@torch.no_grad()
+# Check PyTorch version for torch.compile
+TORCH_MAJOR = int(torch.__version__.split('.')[0])
+TORCH_MINOR = int(torch.__version__.split('.')[1])
+use_torch_compile = (TORCH_MAJOR >= 2)
+
+@torch.no_grad() # Keep no_grad for inference efficiency
 def encode_corpus(
     documents: Dict[str, Union[str, Dict]],
-    doc_encoder: PreTrainedModel, # The document encoder part of your model
+    doc_encoder: PreTrainedModel,
     tokenizer: PreTrainedTokenizer,
-    batch_size: int = 128,
+    batch_size: int = 1024,  # <--- INCREASED default, tune this!
     max_length: int = 512,
     device: Optional[torch.device] = None,
+    use_amp: bool = True,      # <--- Added flag for AMP
+    compile_model: bool = True, # <--- Added flag for torch.compile
 ) -> Dict[str, torch.Tensor]:
-    """Encodes all documents in the corpus."""
+    """
+    Encodes all documents in the corpus with optimizations.
+
+    Args:
+        documents: Dictionary mapping doc_id to document text or dict containing text.
+        doc_encoder: The document encoder model.
+        tokenizer: The tokenizer.
+        batch_size: Number of documents to process at once. Tune for your GPU RAM.
+        max_length: Max sequence length for tokenizer.
+        device: Target device (e.g., torch.device("cuda")). Auto-detects if None.
+        use_amp: Whether to use Automatic Mixed Precision (AMP) for speed/memory savings.
+        compile_model: Whether to use torch.compile (PyTorch 2.0+) for potential speedup.
+
+    Returns:
+        Dictionary mapping doc_id to its embedding tensor on CPU.
+    """
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info(f"Encoding corpus using device: {device}")
+    if use_amp and device.type != 'cuda':
+        logger.warning("AMP is requested but device is not CUDA. Disabling AMP.")
+        use_amp = False
+    if compile_model and not use_torch_compile:
+        logger.warning("torch.compile requested but PyTorch version < 2.0. Disabling compile.")
+        compile_model = False
+    if compile_model and device.type == 'cpu':
+        logger.warning("torch.compile on CPU might be slow or have limited backend support. Proceeding...")
 
+
+    # --- Model Preparation ---
     doc_encoder.to(device)
     doc_encoder.eval()
 
-    doc_ids = list(documents.keys())
-    doc_texts = []
-    # (Same text extraction logic as in the previous encode_documents)
-    for doc_id in doc_ids:
-        # ... extract text ...
-        doc_content = documents[doc_id]
-        if isinstance(doc_content, dict):
-            doc_texts.append(doc_content.get("text", ""))
-        elif isinstance(doc_content, str):
-            doc_texts.append(doc_content)
-        else:
-            doc_texts.append("")
+    # Apply torch.compile if requested and possible
+    if compile_model:
+        logger.info("Applying torch.compile to the document encoder...")
+        try:
+            # Common modes:
+            # 'default': Good balance
+            # 'reduce-overhead': Faster compilation, potentially less speedup
+            # 'max-autotune': Slower compilation, potentially more speedup
+            start_compile_time = time.time()
+            doc_encoder = torch.compile(doc_encoder, mode='default')
+            logger.info(f"torch.compile applied successfully (took {time.time() - start_compile_time:.2f}s). Note: First batch will include warmup/compilation time.")
+        except Exception as e:
+            logger.error(f"torch.compile failed: {e}. Proceeding without compilation.")
+            compile_model = False # Fallback
 
+    # --- Data Preparation ---
+    logger.info("Preparing document texts...")
+    doc_ids = list(documents.keys())
+    doc_texts: List[str] = [] # Explicitly type hint
+    for doc_id in doc_ids:
+        doc_content = documents[doc_id]
+        text_to_append = "" # Default to empty string
+        if isinstance(doc_content, dict):
+            text_to_append = doc_content.get("text", "") # Safely get text
+        elif isinstance(doc_content, str):
+            text_to_append = doc_content
+        # Handle potential None or other unexpected types gracefully if necessary
+        if text_to_append is None:
+            text_to_append = ""
+        doc_texts.append(text_to_append)
 
     num_docs = len(doc_ids)
-    corpus_embeddings = {}
+    corpus_embeddings: Dict[str, torch.Tensor] = {} # Explicit type hint
 
-    with torch.no_grad():
-        for i in tqdm(range(0, num_docs, batch_size), desc="Encoding Corpus"):
-            batch_doc_ids = doc_ids[i : i + batch_size]
-            batch_texts = doc_texts[i : i + batch_size]
+    logger.info(f"Starting encoding of {num_docs} documents with batch size {batch_size}...")
+    # Check tokenizer type
+    if not getattr(tokenizer, 'is_fast', False): # Use getattr for safety
+         logger.warning("Tokenizer is not a 'Fast' tokenizer. Consider installing 'tokenizers' and ensuring a Fast tokenizer is loaded for better performance.")
 
-            inputs = tokenizer(
-                batch_texts, padding="max_length", truncation=True,
-                max_length=max_length, return_tensors="pt"
-            )
+    # --- Encoding Loop ---
+    for i in tqdm(range(0, num_docs, batch_size), desc="Encoding Corpus", leave=False):
+        batch_doc_ids = doc_ids[i : i + batch_size]
+        batch_texts = doc_texts[i : i + batch_size]
 
-            inputs = {k: v.to(device) for k, v in inputs.items()}
+        inputs = tokenizer(
+            batch_texts,
+            padding="longest", # <--- Use 'longest' or 'max_length'
+            truncation=True,
+            max_length=max_length,
+            return_tensors="pt",
+            # return_attention_mask=True # Ensure mask is returned, usually default with pt
+        )
 
-            batch_embeddings = doc_encoder.get_embedding(
-                input_ids=inputs['input_ids'],
-                attention_mask=inputs['attention_mask']
-            )
+        # Move inputs to device
+        inputs = {k: v.to(device) for k, v in inputs.items()}
 
-            batch_embeddings_cpu = batch_embeddings.detach().cpu()
-            for doc_id, embedding in zip(batch_doc_ids, batch_embeddings_cpu):
-                corpus_embeddings[doc_id] = embedding
+        # Use AMP context manager if enabled
+        with torch.amp.autocast('cuda', enabled=use_amp):
+            # Assuming your model has a method 'get_embedding' or similar
+            # If not, use the standard forward pass and extract embeddings
+            # e.g., outputs = doc_encoder(**inputs)
+            #      batch_embeddings = outputs.last_hidden_state[:, 0] # CLS token example
+            try:
+                 batch_embeddings = doc_encoder.get_embedding(
+                     input_ids=inputs['input_ids'],
+                     attention_mask=inputs['attention_mask']
+                 )
+            except AttributeError:
+                 # Fallback to standard model call if get_embedding doesn't exist
+                 outputs = doc_encoder(**inputs)
+                 # Adapt this extraction based on your model and desired embedding type
+                 # Example: CLS token pooling
+                 batch_embeddings = outputs.last_hidden_state[:, 0]
+                 # Example: Mean pooling (needs attention mask)
+                 # token_embeddings = outputs.last_hidden_state
+                 # input_mask_expanded = inputs['attention_mask'].unsqueeze(-1).expand(token_embeddings.size()).float()
+                 # sum_embeddings = torch.sum(token_embeddings * input_mask_expanded, 1)
+                 # sum_mask = torch.clamp(input_mask_expanded.sum(1), min=1e-9)
+                 # batch_embeddings = sum_embeddings / sum_mask
+
+
+        # Move embeddings to CPU right away to free GPU memory for next batch
+        batch_embeddings_cpu = batch_embeddings.detach().cpu()
+        for doc_id, embedding in zip(batch_doc_ids, batch_embeddings_cpu):
+            corpus_embeddings[doc_id] = embedding
 
     logger.info(f"Finished encoding corpus. {len(corpus_embeddings)} documents encoded.")
     return corpus_embeddings
-
-@torch.no_grad() # Disable gradient calculations for inference
-def encode_query(
-    query_text: str,
-    model: torch.nn.Module, # Expects an nn.Module with a get_embedding method
-    tokenizer: PreTrainedTokenizer,
-    max_length: int,
-    device: Optional[torch.device] = None
-) -> torch.Tensor:
-    """
-    Encodes a single query text into an embedding using the model's get_embedding method.
-
-    Args:
-        query_text: The text of the query string.
-        model: An instance of the model (e.g., TripletRankerModel) which MUST have
-               a method `get_embedding(self, input_ids, attention_mask)`
-               that returns the desired embedding tensor.
-        tokenizer: The tokenizer associated with the model.
-        max_length: The maximum sequence length for tokenization.
-        device: The PyTorch device ('cuda', 'cpu', etc.). Auto-detects if None.
-
-    Returns:
-        A torch.Tensor containing the query embedding, typically shape [1, hidden_size],
-        residing on the specified device.
-    """
-    if device is None:
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    model.eval()     # Set the model to evaluation mode
-    model.to(device) # Ensure the model is on the correct device
-
-    # Tokenize the input query text
-    inputs = tokenizer(
-        query_text,
-        padding="max_length", # Pad to max_length
-        truncation=True,      # Truncate if longer than max_length
-        max_length=max_length,
-        return_tensors="pt"   # Return PyTorch tensors
-    )
-
-    # Move the tokenized inputs (input_ids, attention_mask) to the target device
-    inputs = {k: v.to(device) for k, v in inputs.items()}
-
-    # Pass only the required arguments explicitly to the get_embedding method
-    # This avoids TypeErrors if the tokenizer adds extra keys like 'token_type_ids'
-    query_embedding = model.get_embedding(
-        input_ids=inputs['input_ids'],
-        attention_mask=inputs['attention_mask']
-    )
-
-    # The output embedding is kept on the device it was computed on.
-    # Shape is typically [batch_size=1, embedding_dimension]
-    return query_embedding

@@ -67,7 +67,7 @@ def preprocess(queries, docs, qrels, model_name, length_setting, train_available
 
     # first seperate the test set (include queries of all lengths)
     if not train_available:
-        query_test, qrel_test = dp.get_testset(test_ratio=0.2, random_state=random_state)
+        query_test, qrel_test = dp.get_testset(test_ratio=0.065, random_state=random_state)
         print(f'test size: {len(query_test)}')
     else:
         print(f'test size: {len(queries_test)}')
@@ -119,16 +119,16 @@ def preprocess(queries, docs, qrels, model_name, length_setting, train_available
 
     print('Creating validation dataset...')
     val_dataset = TripletRankingDataset(query_val, docs, qrel_val, tokenizer, num_negatives, max_length=max_len_doc)
-    val_loader = DataLoader(val_dataset, batch_size=16, shuffle=False, num_workers=2, pin_memory=True)
+    val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False, num_workers=2, pin_memory=True)
 
     print('Creating test dataset...')
     if train_available:
         test_dataset = RankingDataset(queries_test, docs, qrels_test, tokenizer)  # query-doc instead of triplets
-        test_loader = DataLoader(test_dataset, batch_size=16, shuffle=False, num_workers=2, pin_memory=True)
+        test_loader = DataLoader(test_dataset, batch_size=1024, shuffle=False, num_workers=2, pin_memory=True)
         return train_loader, val_loader, test_loader, {}, {}, query_val, qrel_val
     else:
         test_dataset = RankingDataset(query_test, docs, qrel_test, tokenizer)  # query-doc instead of triplets
-        test_loader = DataLoader(test_dataset, batch_size=16, shuffle=False, num_workers=2, pin_memory=True)
+        test_loader = DataLoader(test_dataset, batch_size=1024, shuffle=False, num_workers=2, pin_memory=True)
         return train_loader, val_loader, test_loader, query_test, qrel_test, query_val, qrel_val
     # -----------------------------------------------------
 

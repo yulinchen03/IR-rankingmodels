@@ -1,778 +1,507 @@
-import os
-from collections import defaultdict
-from typing import Dict, Tuple, List
-
-import numpy as np
 import torch
-import torch.nn.functional as F # Needed for cosine similarity
-from ir_measures import calc_aggregate
-from tqdm import tqdm
-# from tqdm import tqdm
-from ir_measures import *
-from scipy import stats  # For t-test
+import ir_measures
+from ir_measures import *  # Common metrics like nDCG, RR, R, P
 import pandas as pd
-from transformers import PreTrainedTokenizer
-
-from IRutils.dataset import encode_query
-from IRutils.models import TripletRankerModel
-
-
-def write_results(metric_scores, save_path, model_name, dataset_name, length_setting):
-    """
-    Saves evaluation results to a file, reporting the specified metrics.
-
-    Args:
-        metric_scores: A dictionary-like object mapping ir_measures metric objects
-                       to their calculated scores. Must include keys for the metrics
-                       defined in `required_metrics`.
-        save_path: Path to the file where results will be saved.
-        model_name: Name of the model being evaluated.
-        dataset_name: Name of the dataset used.
-        length_setting: Description of the query length focus or model variant
-                        (e.g., "short", "all", "baseline").
-    """
-    # Define the required metric objects for key access and reporting
-    # These MUST match the metrics calculated in your evaluate function
-    required_metrics = {
-        'nDCG@100': nDCG @ 100,
-        'RR': RR,
-        'R@100': R @ 100,
-    }
-
-    # Check if all required metric scores are present in the input dict
-    scores = {}
-    missing_metrics = []
-    found_metric_names = []
-    for name, metric_obj in required_metrics.items():
-        if metric_obj not in metric_scores:
-            missing_metrics.append(name)
-        else:
-            scores[name] = metric_scores[metric_obj]
-            found_metric_names.append(name)
-
-    if missing_metrics:
-        print(f"Metric scores not found for: {', '.join(missing_metrics)}. "
-                     f"Metrics found were: {found_metric_names}. "
-                     f"Ensure your evaluate function calculates all required metrics: "
-                     f"{list(required_metrics.keys())}")
-        # Decide if you want to proceed with partial results or exit
-        # For now, we'll proceed with what we have, but log the error.
-        # return # Uncomment this to exit if any required metric is missing
-
-    print(f"Writing results for metrics: {list(scores.keys())} to {save_path}")
-
-    # Save results to a file
-    try:
-        with open(save_path, "w") as f:
-            f.write(f"Evaluation Results for {model_name} model ({length_setting}) on {dataset_name} dataset:\n")
-            f.write("----------------------------------------------------\n")
-
-            # --- Ranking/Overall Quality ---
-            if 'nDCG@100' in scores:
-                f.write(f"nDCG@100: {scores['nDCG@100']:.4f}  (Quality of Top 100 Ranking)\n")
-            if 'RR' in scores:
-                f.write(f"RR:  {scores['RR']:.4f}  (Mean Reciprocal Rank)\n")
-            f.write("\n")
-
-            # --- Recall Metric ---
-            if 'R@100' in scores:
-                f.write(f"R@100:   {scores['R@100']:.4f}  (Recall within Top 100)\n")
-            f.write("\n")
+from tqdm.auto import tqdm
+import numpy as np
+from scipy import stats
+import gc  # Import garbage collector
+import os  # Import os for path joining
+from transformers import AutoTokenizer  # Keep if tokenizer needed here, else remove
 
 
-            f.write("----------------------------------------------------\n")
-            f.write("\n")
-            f.write("Explanation of reported metrics:\n")
-            f.write(
-                "  nDCG@k: Measures ranking quality, rewarding highly relevant documents found earlier.\n"
-                "          Normalized discount cumulative gain. Good overall top-k ranking indicator.\n"
-            )
-            f.write(
-                "  RR:     The [Mean] Reciprocal Rank ([M]RR) is a precision-focused measure that scores "
-                "          based on the reciprocal of the rank of the highest-scoring relevance document.\n"
-            )
-            f.write(
-                "  R@k:    Recall@k. Fraction of *known* relevant documents found in the top k results.\n"
-                "          Measures coverage within a practical top set (@100).\n"
-            )
-
-        print(f'Successfully written results to {save_path}.')
-    except IOError as e:
-        print(f"Failed to write results to {save_path}: {e}")
-    except Exception as e:
-        print(f"An unexpected error occurred during result writing: {e}")
-
-
-def get_per_query_metrics(metrics, qrels, run):
-    """Calculates metrics for each query individually."""
-    per_query_results = {} # {qid: {metric_name: score}}
-    # ir_measures.iter_calc returns an iterator of measurement objects
-    # Each measurement has qid, metric, value
-    for measurement in iter_calc(metrics, qrels, run):
-        qid = measurement.query_id
-        metric_name = str(measurement.measure) # Get a string representation
-        score = measurement.value
-        if qid not in per_query_results:
-            per_query_results[qid] = {}
-        per_query_results[qid][metric_name] = score
-    return per_query_results
-
-
-def evaluate(
-    model: 'TripletRankerModel', # Your trained model instance
-    tokenizer: 'PreTrainedTokenizer', # The model's tokenizer
-    queries: Dict[str, str],          # Dict: qid -> query_text
-    corpus_embeddings: Dict[str, torch.Tensor], # Dict: doc_id -> embedding_tensor (PRE-COMPUTED)
-    qrels: Dict[str, Dict[str, int]], # Ground truth: qid -> {doc_id: relevance}
-    device: torch.device,
-    max_length: int,                  # Max sequence length for tokenizer
-    score_measure: str = 'neg_l2'     # 'neg_l2', 'cos', or 'dot'
-) -> (Dict, Dict, Dict):
-    """
-    Evaluates the model by scoring all documents against each query using pre-computed embeddings.
-
-    Args:
-        model: The trained ranking model (used for encoding queries).
-        tokenizer: The tokenizer associated with the model.
-        queries: Dictionary mapping query IDs to query text.
-        corpus_embeddings: Dictionary mapping document IDs to their pre-computed embeddings (torch.Tensor).
-                           These tensors should ideally be on CPU for efficient stacking first.
-        qrels: Ground truth relevance judgements.
-        device: The PyTorch device to run computations on (e.g., 'cuda:0' or 'cpu').
-        max_length: Maximum sequence length for query tokenization.
-        score_measure: The method to calculate query-document scores:
-                       'neg_l2': Negative L2 norm (closer embeddings get higher scores).
-                       'cos': Cosine similarity.
-                       'dot': Dot product.
-
-    Returns:
-        A tuple containing:
-        - aggregate_metric_scores (Dict): Dictionary of aggregate metric scores.
-        - per_query_metric_scores (Dict): Dictionary of per-query metric scores.
-        - run (Dict): The full run results (qid -> {doc_id: score}).
-    """
+# Helper function to encode queries (assuming it's needed by evaluate functions)
+# Ensure this function handles batching or single query encoding appropriately
+def encode_queries(queries_dict, model, tokenizer, device, max_length=512):
+    """Encodes a dictionary of queries."""
     model.eval()
-    model.to(device) # Ensure model is on the correct device for query encoding
-    run = {}  # Format: {qid: {doc_id: score}}
-
-    print(f"Preparing corpus embeddings tensor on device: {device}")
-    doc_ids = list(corpus_embeddings.keys())
-    # Stack embeddings (might happen on CPU if input tensors are CPU)
-    all_doc_embeddings_stacked = torch.stack(list(corpus_embeddings.values()))
-    # Move the entire stacked tensor to the target device *once*
-    all_doc_embeddings = all_doc_embeddings_stacked.to(device)
-    print(f"Corpus embeddings tensor shape: {all_doc_embeddings.shape}, Device: {all_doc_embeddings.device}")
-
-    # Determine which queries to evaluate (those present in qrels and queries dict)
-    evaluation_qids = [qid for qid in qrels.keys() if qid in queries]
-    if len(evaluation_qids) != len(qrels):
-         print(f"Evaluating on {len(evaluation_qids)} queries present in both qrels and the provided queries dict, out of {len(qrels)} total qrels.")
-    if not evaluation_qids:
-        print("No queries found that are present in both qrels and the queries dictionary. Cannot evaluate.")
-        return {}, {}, {}
-
-    print(f"Starting evaluation for {len(evaluation_qids)} queries using '{score_measure}' scoring...")
+    model.to(device)
+    query_embeddings = {}
+    # Consider batching if many queries
     with torch.no_grad():
-        for qid in tqdm(evaluation_qids, desc="Evaluating Queries"):
-            query_text = queries[qid]
-
-            # 1. Encode the current query
-            # Assuming encode_query returns embedding on the specified 'device', shape [1, hidden_size]
-            query_embedding_batched = encode_query(query_text, model, tokenizer, max_length, device)
-            query_embedding = query_embedding_batched.squeeze(0) # Shape: [hidden_size]
-
-            # Ensure query embedding is on the correct device (should be already by encode_query)
-            if query_embedding.device != device:
-                 query_embedding = query_embedding.to(device)
-
-            # 2. Calculate scores between the query and ALL document embeddings
-            if score_measure == 'neg_l2':
-                # Calculate squared L2 distance, then negate
-                # Broadcasting query_embedding: [1, hidden_size] vs [N, hidden_size]
-                distances = torch.norm(query_embedding.unsqueeze(0) - all_doc_embeddings, p=2, dim=1)
-                scores = -distances
-            elif score_measure == 'cos':
-                # Compute cosine similarity
-                scores = F.cosine_similarity(query_embedding.unsqueeze(0), all_doc_embeddings)
-            elif score_measure == 'dot':
-                # Compute dot product
-                # Ensure query_embedding is shape (1, EmbDim) for matmul
-                scores = torch.matmul(query_embedding.unsqueeze(0), all_doc_embeddings.T).squeeze(0)
-            else:
-                raise ValueError(f"Unknown score_measure: {score_measure}. Choose 'neg_l2', 'cos', or 'dot'.")
-
-            # Move scores to CPU for storing in the run dictionary
-            scores_list = scores.cpu().tolist()
-
-            # 3. Store scores in the run dictionary
-            run[qid] = {str(doc_id): score for doc_id, score in zip(doc_ids, scores_list)}
+        for qid, text in tqdm(queries_dict.items(), desc="Encoding Queries"):
+            inputs = tokenizer(text, return_tensors='pt', max_length=max_length, truncation=True, padding=True)
+            inputs = {k: v.to(device) for k, v in inputs.items()}
+            embeddings = model.get_embedding(input_ids=inputs['input_ids'],
+                attention_mask=inputs['attention_mask']).cpu().numpy()  # Assuming CLS token pooling
+            query_embeddings[qid] = embeddings.flatten()  # Store as flat numpy array
+    return query_embeddings
 
 
-    print("Evaluation scoring complete. Calculating metrics...")
-
-    # 4. Calculate metrics using the generated run and ground truth qrels
-    # Define metrics (ensure these match what your evaluation library expects)
-    metrics = [
-        nDCG @ 100,  # Quality of top 100 results (standard)
-        R @ 100,  # Recall within top 100
-        RR
-    ]
-
-    # Calculate aggregate metrics
-    aggregate_scores = calc_aggregate(metrics, qrels, run)
-
-    print("Calculating per-query metrics...")
-    # Calculate per-query metrics
-    per_query_scores = get_per_query_metrics(metrics, qrels, run)
-
-    print("Metrics calculation complete.")
-
-    return aggregate_scores, per_query_scores, run
-
-
-def evaluate_average_ensemble(
-    models: Dict[str, 'TripletRankerModel'], # Dict: model_name -> model_instance
-    tokenizer: 'PreTrainedTokenizer',
-    queries: Dict[str, str],
-    corpus_embeddings_sets: Dict[str, Dict[str, torch.Tensor]], # Dict: model_name -> {doc_id: embedding}
-    qrels: Dict[str, Dict[str, int]],
-    device: torch.device,
-    max_length: int,
-    score_measure: str = 'neg_l2'
-) -> Tuple[Dict[Measure, float], Dict[str, Dict[str, float]], Dict[str, Dict[str, float]]]:
-    """
-    Evaluates an ensemble by averaging scores from multiple models.
-    Uses pre-computed document embeddings for each model.
-
-    Args:
-        models: Dictionary mapping model names to trained model instances.
-        tokenizer: The tokenizer (assumed shared).
-        queries: Dictionary mapping query IDs to query text.
-        corpus_embeddings_sets: Dictionary mapping model names to their respective
-                                pre-computed corpus embeddings ({doc_id: tensor}).
-        qrels: Ground truth relevance judgements.
-        device: PyTorch device.
-        max_length: Max sequence length for query tokenization.
-        score_measure: Scoring method ('neg_l2', 'cos', 'dot').
-
-    Returns:
-        Tuple: (aggregate_metric_scores, per_query_metric_scores, run)
-    """
-    run = {}
-    model_names = list(models.keys())
-    if not model_names:
-        print("Error: No models provided for ensemble evaluation.")
-        return {}, {}, {}
-
-    print(f"Evaluating Average Ensemble with models: {model_names}")
-
-    # --- Prepare models and document embeddings ---
-    stacked_doc_embeddings = {}
-    doc_ids = None
-    for name, model in models.items():
-        if name == 'full':
-            continue
-        model.eval()
-        model.to(device)
-        print(f"Preparing embeddings for model: {name}")
-        if name not in corpus_embeddings_sets:
-            print(f"Error: Corpus embeddings not found for model '{name}'. Skipping.")
-            continue # Or raise error
-
-        current_doc_embeddings = corpus_embeddings_sets[name]
-        if not current_doc_embeddings:
-             print(f"Warning: Corpus embeddings for model '{name}' is empty.")
-             continue
-
-        current_doc_ids = list(current_doc_embeddings.keys())
-        if doc_ids is None:
-            doc_ids = current_doc_ids
-        elif set(doc_ids) != set(current_doc_ids):
-            print(f"Warning: Document ID mismatch between models. Using intersection.")
-            # Potentially recalculate doc_ids based on intersection if strictness needed
-            # For now, assume evaluation requires consistent doc sets or handle missing scores later
-            pass # Sticking with the first set's doc_ids for simplicity, check later
-
-        try:
-            # Ensure embeddings are loaded in the correct doc_id order
-            embeddings_list = [current_doc_embeddings[doc_id] for doc_id in doc_ids]
-            stacked = torch.stack(embeddings_list).to(device)
-            stacked_doc_embeddings[name] = stacked
-            print(f"  Stacked embeddings shape: {stacked.shape}, Device: {stacked.device}")
-        except KeyError as e:
-             print(f"Error: Doc ID {e} not found in embeddings for model '{name}' while trying to align order. Check consistency.")
-             return {}, {}, {} # Cannot proceed if alignment fails
-        except Exception as e:
-            print(f"Error stacking embeddings for model '{name}': {e}")
-            return {}, {}, {}
-
-    if not stacked_doc_embeddings or doc_ids is None:
-         print("Error: Could not prepare document embeddings for any model.")
-         return {}, {}, {}
-
-    num_docs = len(doc_ids)
-    active_model_names = list(stacked_doc_embeddings.keys()) # Models for which embeddings are ready
-
-    # --- Evaluate Queries ---
-    evaluation_qids = [qid for qid in qrels.keys() if qid in queries]
-    if not evaluation_qids:
-        print("Error: No queries found in both qrels and queries dict.")
-        return {}, {}, {}
-    print(f"Starting evaluation for {len(evaluation_qids)} queries using '{score_measure}' scoring...")
+# Helper function for scoring (dot product)
+def score_queries(query_embeddings, doc_embeddings, device):
+    """Calculates scores between query embeddings and all document embeddings."""
+    scores = {}
+    doc_ids = list(doc_embeddings.keys())
+    # Convert doc embeddings dict to a tensor matrix ONCE for efficiency
+    # Ensure consistent ordering
+    try:
+        # Stack tensors directly if they are already tensors
+        doc_matrix = torch.stack([doc_embeddings[doc_id] for doc_id in doc_ids]).to(device)  # Move to target device
+    except TypeError:
+        # If embeddings were loaded as numpy arrays, convert them
+        doc_matrix = torch.tensor(np.stack([doc_embeddings[doc_id] for doc_id in doc_ids]), dtype=torch.float32).to(
+            device)
 
     with torch.no_grad():
-        for qid in tqdm(evaluation_qids, desc="Evaluating Queries (Avg Ensemble)"):
-            query_text = queries[qid]
-            model_scores_list = [] # Store score tensor [num_docs] from each model
+        for qid, q_emb in tqdm(query_embeddings.items(), desc="Scoring Queries"):
+            q_tensor = torch.tensor(q_emb, dtype=torch.float32).to(device)  # Move query to device
+            # Perform dot product scoring
+            q_scores = torch.matmul(doc_matrix,
+                                    q_tensor).cpu().numpy()  # Calculate scores on device, move result to CPU
+            scores[qid] = {doc_ids[i]: float(q_scores[i]) for i in range(len(doc_ids))}
 
-            for name in active_model_names:
-                model = models[name]
-                doc_embeddings = stacked_doc_embeddings[name] # [num_docs, hidden_size]
+    # Cleanup GPU memory used by doc_matrix
+    del doc_matrix
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
-                # 1. Encode query with the current model
-                try:
-                    query_embedding = encode_query(query_text, model, tokenizer, max_length, device).squeeze(0) # [hidden_size]
-                except Exception as e:
-                    print(f"Error encoding query {qid} with model {name}: {e}. Skipping model for this query.")
-                    continue # Skip this model's contribution
-
-                if query_embedding.device != device:
-                    query_embedding = query_embedding.to(device)
-
-                # 2. Calculate scores against all docs for this model
-                try:
-                    if score_measure == 'neg_l2':
-                        distances = torch.norm(query_embedding.unsqueeze(0) - doc_embeddings, p=2, dim=1)
-                        scores = -distances
-                    elif score_measure == 'cos':
-                        scores = F.cosine_similarity(query_embedding.unsqueeze(0), doc_embeddings, dim=1)
-                    elif score_measure == 'dot':
-                        scores = torch.matmul(doc_embeddings, query_embedding)
-                    else:
-                        raise ValueError(f"Invalid score_measure: {score_measure}")
-                    model_scores_list.append(scores) # Append tensor of shape [num_docs]
-                except Exception as e:
-                     print(f"Error calculating scores for qid {qid} with model {name}: {e}. Skipping model for this query.")
-                     continue # Skip this model's contribution
-
-            # 3. Average scores across models
-            if not model_scores_list:
-                print(f"Warning: No scores could be computed for query {qid}. Assigning empty results.")
-                run[qid] = {}
-                continue
-
-            # Stack scores [num_models, num_docs] and average
-            final_scores = torch.stack(model_scores_list).mean(dim=0) # [num_docs]
-            scores_list_cpu = final_scores.cpu().tolist()
-
-            # 4. Store final averaged scores
-            run[qid] = {str(doc_id): score for doc_id, score in zip(doc_ids, scores_list_cpu)}
-
-    print("Scoring complete. Calculating metrics...")
-    # --- Calculate Metrics ---
-    metrics = [
-        nDCG @ 100,  # Quality of top 100 results (standard)
-        R @ 100,  # Recall within top 100
-        RR
-    ]
-    valid_qids_for_metrics = {qid for qid in qrels if qid in run and run[qid]}
-    filtered_qrels = {qid: qrels[qid] for qid in valid_qids_for_metrics}
-    filtered_run = {qid: run[qid] for qid in valid_qids_for_metrics}
-
-    if not filtered_run:
-         print("Warning: No valid queries with scores found to calculate metrics for average ensemble.")
-         return {}, {}, run
-
-    aggregate_scores = calc_aggregate(metrics, filtered_qrels, filtered_run)
-
-    print("Calculating per-query metrics...")
-    per_query_scores = get_per_query_metrics(metrics, filtered_qrels, filtered_run)
-    print("Metrics calculation complete.")
-
-    return aggregate_scores, per_query_scores, run
+    return scores
 
 
+# ---------------------------------------------------------------------
+# Modified Evaluation Functions
+# ---------------------------------------------------------------------
 
-def evaluate_conditional_ensemble(
-    models: Dict[str, 'TripletRankerModel'], # Should contain 'short', 'medium', 'long' keys
-    tokenizer: 'PreTrainedTokenizer',
-    queries: Dict[str, str],
-    corpus_embeddings_sets: Dict[str, Dict[str, torch.Tensor]], # Keys must match model keys
-    qrels: Dict[str, Dict[str, int]],
-    t1: int, # Threshold 1 for query length
-    t2: int, # Threshold 2 for query length
-    device: torch.device,
-    max_length: int,
-    score_measure: str = 'neg_l2',
-    queries_test: Dict[str, str] = None # Keep for query text lookup (can be same as queries)
-) -> Tuple[Dict[Measure, float], Dict[str, Dict[str, float]], Dict[str, Dict[str, float]]]:
-    """
-    Evaluates a conditional ensemble based on query length.
-    Uses pre-computed document embeddings for each model.
+def evaluate(model, tokenizer, queries, doc_embeddings_path, qrels, device, max_length=512, metrics=None):
+    """Evaluates a single model using embeddings loaded from a path."""
+    if metrics is None:
+        metrics = [nDCG @ 100, R @ 100, RR]  # Default metrics
 
-    Args:
-        models: Dict mapping 'short', 'medium', 'long' to model instances.
-        tokenizer: The tokenizer.
-        queries: Dict mapping query IDs to query text (used for evaluation loop).
-        corpus_embeddings_sets: Dict mapping 'short', 'medium', 'long' to their
-                                respective pre-computed corpus embeddings.
-        qrels: Ground truth relevance judgements.
-        t1, t2: Query length thresholds (words).
-        device: PyTorch device.
-        max_length: Max sequence length for tokenization.
-        score_measure: Scoring method ('neg_l2', 'cos', 'dot').
-        queries_test: Dict mapping qid to query text (used for length check). If None, uses `queries`.
+    print(f"Evaluating baseline model. Loading embeddings from: {doc_embeddings_path}")
+    doc_embeddings = None
+    scores = None
+    try:
+        # --- Load embeddings ---
+        doc_embeddings = torch.load(doc_embeddings_path, map_location=device)
+        print(f"Loaded {len(doc_embeddings)} document embeddings.")
+        if doc_embeddings and device != 'cpu':  # Check device if not CPU
+            first_key = next(iter(doc_embeddings))
+            print(f"Document embeddings loaded onto device: {doc_embeddings[first_key].device}")
 
-    Returns:
-        Tuple: (aggregate_metric_scores, per_query_metric_scores, run)
-    """
-    run = {}
-    required_keys = ['short', 'medium', 'long']
-    if not all(key in models for key in required_keys):
-        raise ValueError(f"Models dictionary must contain keys: {required_keys}")
-    if not all(key in corpus_embeddings_sets for key in required_keys):
-        raise ValueError(f"Corpus embeddings sets dictionary must contain keys: {required_keys}")
+        # --- Encode Queries ---
+        query_embeddings = encode_queries(queries, model, tokenizer, device, max_length)
 
-    if queries_test is None:
-        queries_test = queries # Use the main queries dict if specific test dict not provided
+        # --- Score Queries ---
+        scores = score_queries(query_embeddings, doc_embeddings, device)
 
-    print(f"Evaluating Conditional Ensemble (Thresholds: {t1}, {t2})")
+        # --- Evaluate with ir_measures ---
+        evaluator = ir_measures.evaluator(metrics, qrels)
+        results = evaluator.calc_aggregate(scores)  # Aggregate results are fine
 
-    # --- Prepare models and document embeddings ---
-    stacked_doc_embeddings = {}
-    doc_ids = None
-    for name in required_keys:
-        if name == 'full':
-            continue
-        model = models[name]
-        model.eval()
-        model.to(device)
-        print(f"Preparing embeddings for model: {name}")
-        current_doc_embeddings = corpus_embeddings_sets[name]
-        if not current_doc_embeddings:
-             print(f"Error: Corpus embeddings for model '{name}' is empty.")
-             return {}, {}, {}
+        # Per-Query Dictionary Creation ---
+        per_query_results_list = list(evaluator.iter_calc(scores))  # Collect results first
+        per_query_dict = {}
+        for res in per_query_results_list:
+            qid = res.query_id
+            metric_str = str(res.measure)  # Get the specific measure string from the result
+            value = res.value
 
-        current_doc_ids = list(current_doc_embeddings.keys())
-        if doc_ids is None:
-            doc_ids = current_doc_ids
-        elif set(doc_ids) != set(current_doc_ids):
-            print(f"Warning: Document ID mismatch between models. Using first set's IDs ('{required_keys[0]}').")
-            # In a conditional setup, using different doc sets might be acceptable if intended,
-            # but usually they should be consistent. Let's assume consistency for now.
-            pass
+            # Build the nested dictionary correctly
+            if qid not in per_query_dict:
+                per_query_dict[qid] = {}
+            # Assign the value only to the correct metric key
+            per_query_dict[qid][metric_str] = value
 
-        try:
-            # Ensure embeddings are loaded in the correct doc_id order
-            embeddings_list = [current_doc_embeddings[doc_id] for doc_id in doc_ids]
-            stacked = torch.stack(embeddings_list).to(device)
-            stacked_doc_embeddings[name] = stacked
-            print(f"  Stacked embeddings shape: {stacked.shape}, Device: {stacked.device}")
-        except KeyError as e:
-             print(f"Error: Doc ID {e} not found in embeddings for model '{name}'. Check consistency.")
-             return {}, {}, {}
-        except Exception as e:
-            print(f"Error stacking embeddings for model '{name}': {e}")
-            return {}, {}, {}
+        # Convert run format if needed (scores dict is usually compatible)
+        run_df = pd.DataFrame([(q, d, s) for q, docs_scores in scores.items() for d, s in docs_scores.items()],
+                              columns=['query_id', 'doc_id', 'score'])
 
-    if not stacked_doc_embeddings or doc_ids is None:
-         print("Error: Could not prepare document embeddings.")
-         return {}, {}, {}
+        print("Baseline evaluation complete.")
+        return results, per_query_dict, run_df
 
-    num_docs = len(doc_ids)
+    except Exception as e:
+        print(f"Error during baseline evaluation: {e}")
+        import traceback
+        traceback.print_exc()
+        # Return empty results on error? Or re-raise? Adjust as needed.
+        return {}, {}, pd.DataFrame()
+    finally:
+        # --- Cleanup ---
+        print("Cleaning up baseline evaluation resources...")
+        del doc_embeddings
+        del scores
+        del query_embeddings  # Also clear query embeddings
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
-    # --- Evaluate Queries ---
-    evaluation_qids = [qid for qid in qrels.keys() if qid in queries and qid in queries_test]
-    if not evaluation_qids:
-        print("Error: No queries found in qrels, queries, and queries_test dicts.")
-        return {}, {}, {}
-    print(f"Starting evaluation for {len(evaluation_qids)} queries using '{score_measure}' scoring...")
 
-    with torch.no_grad():
-        for qid in tqdm(evaluation_qids, desc="Evaluating Queries (Cond. Ensemble)"):
-            query_text_for_length = queries_test[qid]
-            query_text_for_encoding = queries[qid]
-            query_length = len(query_text_for_length.split())
+def evaluate_average_ensemble(models, tokenizer, queries, embedding_save_dir, qrels, device, max_len_doc=512,
+                              metrics=None):
+    """Evaluates average ensemble, loading embeddings from a directory."""
+    if metrics is None:
+        metrics = [nDCG @ 100, R @ 100, RR]  # Default metrics
 
-            # 1. Select model based on query length
-            if query_length <= t1:
-                selected_model_name = 'short'
-            elif t1 < query_length <= t2:
-                selected_model_name = 'medium'
-            else:  # query_length > t2
-                selected_model_name = 'long'
+    print(f"Evaluating average ensemble. Loading embeddings from: {embedding_save_dir}")
+    loaded_embeddings = {}
+    scores = {}
+    model_keys = list(models.keys())  # e.g., ['short', 'medium', 'long']
 
-            model = models[selected_model_name]
-            doc_embeddings = stacked_doc_embeddings[selected_model_name]
+    try:
+        # --- Load all necessary embeddings ---
+        for key in model_keys:
+            path = os.path.join(embedding_save_dir, f'{key}.pt')
+            if not os.path.exists(path):
+                raise FileNotFoundError(f"Embedding file not found for model '{key}' at {path}")
+            loaded_embeddings[key] = torch.load(path, map_location=device)
+            print(f"Loaded embeddings for {key} model.")
+            if loaded_embeddings[key] and device != 'cpu':
+                first_doc_id = next(iter(loaded_embeddings[key]))
+                print(f"  Device: {loaded_embeddings[key][first_doc_id].device}")
 
-            # 2. Encode query with the selected model
+        # --- Encode Queries (Average embedding across models) ---
+        print("Encoding queries using average ensemble...")
+        query_embeddings_avg = {}
+        # Get query embeddings from each model
+        all_query_embeddings = {}
+        for key in model_keys:
+            all_query_embeddings[key] = encode_queries(queries, models[key], tokenizer, device, max_len_doc)
+
+        # Average query embeddings
+        qids = list(queries.keys())
+        for qid in tqdm(qids, desc="Averaging Query Embeddings"):
+            avg_emb = np.mean([all_query_embeddings[key][qid] for key in model_keys], axis=0)
+            query_embeddings_avg[qid] = avg_emb
+
+        del all_query_embeddings  # Free memory from individual query embeddings
+        gc.collect()
+
+        # --- Score Queries (Average score across models) ---
+        # This requires scoring against each model's doc embeddings separately and then averaging
+        print("Scoring queries using average ensemble...")
+        final_scores = {}
+        doc_ids_list = list(loaded_embeddings[model_keys[0]].keys())  # Assume all have same doc ids
+
+        # Pre-stack document embeddings for each model
+        doc_matrices = {}
+        for key in model_keys:
             try:
-                query_embedding = encode_query(query_text_for_encoding, model, tokenizer, max_length, device).squeeze(0)
-            except Exception as e:
-                print(f"Error encoding query {qid} with selected model {selected_model_name}: {e}. Skipping query.")
-                run[qid] = {}
-                continue
+                doc_matrices[key] = torch.stack([loaded_embeddings[key][doc_id] for doc_id in doc_ids_list]).to(device)
+            except TypeError:  # Handle numpy arrays
+                doc_matrices[key] = torch.tensor(np.stack([loaded_embeddings[key][doc_id] for doc_id in doc_ids_list]),
+                                                 dtype=torch.float32).to(device)
 
-            if query_embedding.device != device:
-                query_embedding = query_embedding.to(device)
+        with torch.no_grad():
+            for qid, q_emb_avg in tqdm(query_embeddings_avg.items(), desc="Scoring Avg Ensemble"):
+                q_tensor_avg = torch.tensor(q_emb_avg, dtype=torch.float32).to(device)
+                avg_doc_scores = None
 
-            # 3. Calculate scores against all docs using the selected model
-            try:
-                if score_measure == 'neg_l2':
-                    distances = torch.norm(query_embedding.unsqueeze(0) - doc_embeddings, p=2, dim=1)
-                    scores = -distances
-                elif score_measure == 'cos':
-                    scores = F.cosine_similarity(query_embedding.unsqueeze(0), doc_embeddings, dim=1)
-                elif score_measure == 'dot':
-                    scores = torch.matmul(doc_embeddings, query_embedding)
-                else:
-                    raise ValueError(f"Invalid score_measure: {score_measure}")
-
-                scores_list_cpu = scores.cpu().tolist()
-
-                 # 4. Store scores
-                run[qid] = {str(doc_id): score for doc_id, score in zip(doc_ids, scores_list_cpu)}
-
-            except Exception as e:
-                 print(f"Error calculating scores for qid {qid} with model {selected_model_name}: {e}. Skipping query.")
-                 run[qid] = {}
-
-
-    print("Scoring complete. Calculating metrics...")
-    # --- Calculate Metrics ---
-    metrics = [
-        nDCG @ 100,  # Quality of top 100 results (standard)
-        R @ 100,  # Recall within top 100
-        RR
-    ]
-    valid_qids_for_metrics = {qid for qid in qrels if qid in run and run[qid]}
-    filtered_qrels = {qid: qrels[qid] for qid in valid_qids_for_metrics}
-    filtered_run = {qid: run[qid] for qid in valid_qids_for_metrics}
-
-    if not filtered_run:
-         print("Warning: No valid queries with scores found to calculate metrics for conditional ensemble.")
-         return {}, {}, run
-
-    aggregate_scores = calc_aggregate(metrics, filtered_qrels, filtered_run)
-
-    print("Calculating per-query metrics...")
-    per_query_scores = get_per_query_metrics(metrics, filtered_qrels, filtered_run)
-    print("Metrics calculation complete.")
-
-    return aggregate_scores, per_query_scores, run
-
-
-def evaluate_weighted_average_ensemble(
-    models: Dict[str, 'TripletRankerModel'], # Expects 'short', 'medium', 'long' keys
-    tokenizer: 'PreTrainedTokenizer',
-    queries: Dict[str, str],
-    corpus_embeddings_sets: Dict[str, Dict[str, torch.Tensor]], # Keys must match model keys
-    weights_config: Dict[str, List[float]], # e.g., {'short': [w1, w2, w3], 'medium': [...], 'long': [...]}
-    qrels: Dict[str, Dict[str, int]],
-    t1: int,
-    t2: int,
-    device: torch.device,
-    max_length: int,
-    score_measure: str = 'neg_l2',
-    queries_test: Dict[str, str] = None # For query length check
-) -> Tuple[Dict[Measure, float], Dict[str, Dict[str, float]], Dict[str, Dict[str, float]]]:
-    """
-    Evaluates an ensemble using weighted averaging based on query length.
-    Uses pre-computed document embeddings for each model.
-
-    Args:
-        models: Dict mapping 'short', 'medium', 'long' to model instances.
-        tokenizer: The tokenizer.
-        queries: Dict mapping query IDs to query text (for evaluation loop).
-        corpus_embeddings_sets: Dict mapping 'short', 'medium', 'long' to their embeddings.
-        weights_config: Dict defining weights per query category.
-                        Keys: 'short', 'medium', 'long'.
-                        Values: List of weights [w_short, w_medium, w_long] for models['short'], models['medium'], models['long'].
-        qrels: Ground truth.
-        t1, t2: Query length thresholds.
-        device: PyTorch device.
-        max_length: Max sequence length.
-        score_measure: Scoring method.
-        queries_test: Dict mapping qid to query text (for length check). If None, uses `queries`.
-
-    Returns:
-        Tuple: (aggregate_metric_scores, per_query_metric_scores, run)
-    """
-    run = {}
-    model_keys = ['short', 'medium', 'long'] # Expected order for weights
-    if not all(key in models for key in model_keys):
-        raise ValueError(f"Models dictionary must contain keys: {model_keys}")
-    if not all(key in corpus_embeddings_sets for key in model_keys):
-        raise ValueError(f"Corpus embeddings sets dictionary must contain keys: {model_keys}")
-    if not all(key in weights_config for key in model_keys):
-         raise ValueError(f"Weights config dictionary must contain keys: {model_keys}")
-
-    if queries_test is None:
-        queries_test = queries
-
-    print(f"Evaluating Weighted Average Ensemble (Thresholds: {t1}, {t2})")
-
-    # --- Prepare models and document embeddings ---
-    stacked_doc_embeddings = {}
-    doc_ids = None
-    for name in model_keys:
-        model = models[name]
-        model.eval()
-        model.to(device)
-        print(f"Preparing embeddings for model: {name}")
-        current_doc_embeddings = corpus_embeddings_sets[name]
-        if not current_doc_embeddings:
-             print(f"Error: Corpus embeddings for model '{name}' is empty.")
-             return {}, {}, {}
-
-        current_doc_ids = list(current_doc_embeddings.keys())
-        if doc_ids is None:
-            doc_ids = current_doc_ids
-        elif set(doc_ids) != set(current_doc_ids):
-            print(f"Warning: Document ID mismatch between models. Using first set's IDs ('{model_keys[0]}').")
-            pass # Assume consistency
-
-        try:
-            embeddings_list = [current_doc_embeddings[doc_id] for doc_id in doc_ids]
-            stacked = torch.stack(embeddings_list).to(device)
-            stacked_doc_embeddings[name] = stacked
-            print(f"  Stacked embeddings shape: {stacked.shape}, Device: {stacked.device}")
-        except KeyError as e:
-             print(f"Error: Doc ID {e} not found in embeddings for model '{name}'. Check consistency.")
-             return {}, {}, {}
-        except Exception as e:
-            print(f"Error stacking embeddings for model '{name}': {e}")
-            return {}, {}, {}
-
-    if not stacked_doc_embeddings or doc_ids is None:
-         print("Error: Could not prepare document embeddings.")
-         return {}, {}, {}
-
-    num_docs = len(doc_ids)
-    num_models = len(model_keys)
-
-    # --- Evaluate Queries ---
-    evaluation_qids = [qid for qid in qrels.keys() if qid in queries and qid in queries_test]
-    if not evaluation_qids:
-        print("Error: No queries found in qrels, queries, and queries_test dicts.")
-        return {}, {}, {}
-    print(f"Starting evaluation for {len(evaluation_qids)} queries using '{score_measure}' scoring...")
-
-    with torch.no_grad():
-        for qid in tqdm(evaluation_qids, desc="Evaluating Queries (W.Avg Ensemble)"):
-            query_text_for_length = queries_test[qid]
-            query_text_for_encoding = queries[qid]
-            query_length = len(query_text_for_length.split())
-
-            # 1. Determine weights based on query length category
-            if query_length <= t1:
-                current_weights = weights_config['short']
-            elif t1 < query_length <= t2:
-                current_weights = weights_config['medium']
-            else:  # query_length > t2
-                current_weights = weights_config['long']
-
-            if len(current_weights) != num_models:
-                raise ValueError(f"Number of weights ({len(current_weights)}) for category "
-                                 f"does not match number of models ({num_models}). "
-                                 f"Weights should correspond to [{', '.join(model_keys)}].")
-
-            # Normalize weights to sum to 1 (optional, but good practice)
-            weight_sum = sum(current_weights)
-            if weight_sum <= 0:
-                print(f"Warning: Weights sum to {weight_sum} for query {qid}. Using equal weights.")
-                normalized_weights = [1.0 / num_models] * num_models
-            else:
-                normalized_weights = [w / weight_sum for w in current_weights]
-
-
-            # 2. Get scores from ALL models
-            all_model_scores = [] # List to hold score tensors [num_docs]
-            valid_model_indices_for_weighting = [] # Track which models successfully produced scores
-
-            for idx, name in enumerate(model_keys):
-                model = models[name]
-                doc_embeddings = stacked_doc_embeddings[name]
-
-                try:
-                    query_embedding = encode_query(query_text_for_encoding, model, tokenizer, max_length, device).squeeze(0)
-                    if query_embedding.device != device:
-                        query_embedding = query_embedding.to(device)
-
-                    if score_measure == 'neg_l2':
-                        distances = torch.norm(query_embedding.unsqueeze(0) - doc_embeddings, p=2, dim=1)
-                        scores = -distances
-                    elif score_measure == 'cos':
-                        scores = F.cosine_similarity(query_embedding.unsqueeze(0), doc_embeddings, dim=1)
-                    elif score_measure == 'dot':
-                        scores = torch.matmul(doc_embeddings, query_embedding)
+                for key in model_keys:
+                    # Score query_avg against doc_embeddings[key]
+                    q_scores_for_key = torch.matmul(doc_matrices[key], q_tensor_avg).cpu()  # Keep on CPU for averaging
+                    if avg_doc_scores is None:
+                        avg_doc_scores = q_scores_for_key
                     else:
-                        raise ValueError(f"Invalid score_measure: {score_measure}")
+                        avg_doc_scores += q_scores_for_key
 
-                    all_model_scores.append(scores)
-                    valid_model_indices_for_weighting.append(idx) # Store original index
+                avg_doc_scores /= len(model_keys)
+                final_scores[qid] = {doc_ids_list[i]: float(avg_doc_scores[i]) for i in range(len(doc_ids_list))}
 
-                except Exception as e:
-                    print(f"Error scoring query {qid} with model {name}: {e}. Skipping model for this query's weighting.")
-                    # We need a placeholder or adjust weights later if a model fails
-                    all_model_scores.append(None) # Add None to keep list length consistent temporarily
+        scores = final_scores
+        del doc_matrices  # Free GPU memory for doc matrices
+        del query_embeddings_avg
+        gc.collect()
+        if torch.cuda.is_available(): torch.cuda.empty_cache()
+
+        # --- Evaluate with ir_measures ---
+        evaluator = ir_measures.evaluator(metrics, qrels)
+        results = evaluator.calc_aggregate(scores)
+
+        # Per-Query Dictionary Creation ---
+        per_query_results_list = list(evaluator.iter_calc(scores))  # Collect results first
+        per_query_dict = {}
+        for res in per_query_results_list:
+            qid = res.query_id
+            metric_str = str(res.measure)  # Get the specific measure string from the result
+            value = res.value
+
+            # Build the nested dictionary correctly
+            if qid not in per_query_dict:
+                per_query_dict[qid] = {}
+            # Assign the value only to the correct metric key
+            per_query_dict[qid][metric_str] = value
+
+        run_df = pd.DataFrame([(q, d, s) for q, docs_scores in scores.items() for d, s in docs_scores.items()],
+                              columns=['query_id', 'doc_id', 'score'])
+
+        print("Average ensemble evaluation complete.")
+        return results, per_query_dict, run_df
+
+    except Exception as e:
+        print(f"Error during average ensemble evaluation: {e}")
+        import traceback
+        traceback.print_exc()
+        return {}, {}, pd.DataFrame()
+    finally:
+        # --- Cleanup ---
+        print("Cleaning up average ensemble resources...")
+        del loaded_embeddings
+        del scores
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
 
-            # 3. Calculate weighted average score
-            if not valid_model_indices_for_weighting:
-                 print(f"Warning: No scores could be computed for query {qid}. Assigning empty results.")
-                 run[qid] = {}
-                 continue
+def evaluate_conditional_ensemble(models, tokenizer, queries, embedding_save_dir, qrels, t1, t2, device,
+                                  max_len_doc=512, metrics=None):
+    """Evaluates conditional ensemble, loading embeddings as needed."""
+    if metrics is None:
+        metrics = [nDCG @ 100, R @ 100, RR]  # Default metrics
 
-            final_scores = torch.zeros(num_docs, device=device)
-            effective_weight_sum = 0.0 # Recalculate sum based on models that worked
+    print(f"Evaluating conditional ensemble. Loading embeddings from: {embedding_save_dir}")
+    loaded_embeddings = {}  # Store embeddings as they are loaded
+    scores = {}
+    model_keys = ['short', 'medium', 'long']  # Expected keys
 
-            for idx in valid_model_indices_for_weighting:
-                effective_weight_sum += normalized_weights[idx]
+    try:
+        # --- Pre-encode all queries with their respective models ONCE ---
+        print("Pre-encoding queries for conditional ensemble...")
+        query_embeddings = {}  # Dict: qid -> embedding
+        qids = list(queries.keys())
 
-            if effective_weight_sum <= 0:
-                 print(f"Warning: Effective weight sum is zero for query {qid} after model failures. Using equal weighting for successful models.")
-                 num_successful = len(valid_model_indices_for_weighting)
-                 for i, idx in enumerate(valid_model_indices_for_weighting):
-                      if all_model_scores[idx] is not None:
-                          final_scores += (1.0 / num_successful) * all_model_scores[idx]
+        for qid in tqdm(qids, desc="Encoding Queries Conditionally"):
+            query_text = queries[qid]
+            query_length = len(query_text.split())
+
+            if query_length <= t1:
+                model_key = 'short'
+            elif query_length <= t2:
+                model_key = 'medium'
             else:
-                # Renormalize weights based on successful models
-                for i, idx in enumerate(valid_model_indices_for_weighting):
-                     if all_model_scores[idx] is not None:
-                         weight = normalized_weights[idx] / effective_weight_sum
-                         final_scores += weight * all_model_scores[idx]
+                model_key = 'long'
+
+            # Encode using the chosen model
+            model = models[model_key]
+            with torch.no_grad():
+                inputs = tokenizer(query_text, return_tensors='pt', max_length=max_len_doc, truncation=True,
+                                   padding=True)
+                inputs = {k: v.to(device) for k, v in inputs.items()}
+                q_emb = model.get_embedding(input_ids=inputs['input_ids'],
+                attention_mask=inputs['attention_mask']).cpu().numpy().flatten()
+                query_embeddings[qid] = q_emb
+
+        # --- Score Queries ---
+        # We need to load the corresponding doc embeddings for each query group
+        print("Scoring queries using conditional ensemble...")
+        final_scores = {}
+        doc_ids_list = None  # Will be determined when first embedding set is loaded
+
+        # Group queries by the model they use
+        grouped_queries = {'short': [], 'medium': [], 'long': []}
+        for qid in qids:
+            query_length = len(queries[qid].split())
+            if query_length <= t1:
+                grouped_queries['short'].append(qid)
+            elif query_length <= t2:
+                grouped_queries['medium'].append(qid)
+            else:
+                grouped_queries['long'].append(qid)
+
+        # Process each group
+        for model_key in model_keys:
+            if not grouped_queries[model_key]: continue  # Skip if no queries for this group
+
+            print(f"  Processing group: {model_key} ({len(grouped_queries[model_key])} queries)")
+            # Load embeddings for this group
+            path = os.path.join(embedding_save_dir, f'{model_key}.pt')
+            if not os.path.exists(path):
+                raise FileNotFoundError(f"Embedding file not found for model '{model_key}' at {path}")
+            current_doc_embeddings = torch.load(path, map_location=device)
+            print(f"  Loaded embeddings for {model_key} model.")
+            if doc_ids_list is None:
+                doc_ids_list = list(current_doc_embeddings.keys())  # Assuming all doc sets are the same
+
+            # Create doc matrix for scoring
+            try:
+                doc_matrix = torch.stack([current_doc_embeddings[doc_id] for doc_id in doc_ids_list]).to(device)
+            except TypeError:
+                doc_matrix = torch.tensor(np.stack([current_doc_embeddings[doc_id] for doc_id in doc_ids_list]),
+                                          dtype=torch.float32).to(device)
+
+            # Score queries in this group
+            with torch.no_grad():
+                for qid in tqdm(grouped_queries[model_key], desc=f"Scoring {model_key} group"):
+                    q_tensor = torch.tensor(query_embeddings[qid], dtype=torch.float32).to(device)
+                    q_scores = torch.matmul(doc_matrix, q_tensor).cpu().numpy()
+                    final_scores[qid] = {doc_ids_list[i]: float(q_scores[i]) for i in range(len(doc_ids_list))}
+
+            # Clean up memory for this group's embeddings
+            del current_doc_embeddings
+            del doc_matrix
+            gc.collect()
+            if torch.cuda.is_available(): torch.cuda.empty_cache()
+
+        scores = final_scores
+        del query_embeddings  # Clean up all query embeddings now
+        gc.collect()
+
+        # --- Evaluate with ir_measures ---
+        evaluator = ir_measures.evaluator(metrics, qrels)
+        results = evaluator.calc_aggregate(scores)
+
+        # Per-Query Dictionary Creation ---
+        per_query_results_list = list(evaluator.iter_calc(scores))  # Collect results first
+        per_query_dict = {}
+        for res in per_query_results_list:
+            qid = res.query_id
+            metric_str = str(res.measure)  # Get the specific measure string from the result
+            value = res.value
+
+            # Build the nested dictionary correctly
+            if qid not in per_query_dict:
+                per_query_dict[qid] = {}
+            # Assign the value only to the correct metric key
+            per_query_dict[qid][metric_str] = value
+
+        run_df = pd.DataFrame([(q, d, s) for q, docs_scores in scores.items() for d, s in docs_scores.items()],
+                              columns=['query_id', 'doc_id', 'score'])
+
+        print("Conditional ensemble evaluation complete.")
+        return results, per_query_dict, run_df
+
+    except Exception as e:
+        print(f"Error during conditional ensemble evaluation: {e}")
+        import traceback
+        traceback.print_exc()
+        return {}, {}, pd.DataFrame()
+    finally:
+        # --- Cleanup ---
+        # Most cleanup now happens within the loop, but ensure loaded_embeddings is cleared if populated
+        print("Cleaning up conditional ensemble resources...")
+        del loaded_embeddings  # Should be empty if loop logic worked, but clear just in case
+        del scores
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
 
-            scores_list_cpu = final_scores.cpu().tolist()
+def evaluate_weighted_average_ensemble(models, tokenizer, queries, embedding_save_dir, weights_config, qrels, t1, t2,
+                                       device, max_len_doc=512, metrics=None):
+    """Evaluates weighted average ensemble, loading embeddings from directory."""
+    if metrics is None:
+        metrics = [nDCG @ 100, R @ 100, RR]  # Default metrics
 
-            # 4. Store final weighted scores
-            run[qid] = {str(doc_id): score for doc_id, score in zip(doc_ids, scores_list_cpu)}
+    print(f"Evaluating weighted average ensemble. Loading embeddings from: {embedding_save_dir}")
+    loaded_embeddings = {}
+    scores = {}
+    model_keys = ['short', 'medium', 'long']  # Expected keys and order for weights
+
+    try:
+        # --- Load all necessary embeddings ---
+        for key in model_keys:
+            path = os.path.join(embedding_save_dir, f'{key}.pt')
+            if not os.path.exists(path):
+                raise FileNotFoundError(f"Embedding file not found for model '{key}' at {path}")
+            loaded_embeddings[key] = torch.load(path, map_location=device)
+            print(f"Loaded embeddings for {key} model.")
+            if loaded_embeddings[key] and device != 'cpu':
+                first_doc_id = next(iter(loaded_embeddings[key]))
+                print(f"  Device: {loaded_embeddings[key][first_doc_id].device}")
+
+        # --- Encode queries with ALL models (needed for weighted scoring) ---
+        print("Pre-encoding queries with all ensemble models...")
+        all_query_embeddings = {}  # Dict: model_key -> {qid -> embedding}
+        for key in model_keys:
+            all_query_embeddings[key] = encode_queries(queries, models[key], tokenizer, device, max_len_doc)
+
+        # --- Score Queries (Weighted average score) ---
+        print("Scoring queries using weighted average ensemble...")
+        final_scores = {}
+        doc_ids_list = list(loaded_embeddings[model_keys[0]].keys())  # Assume consistent doc IDs
+
+        # Pre-stack document embeddings
+        doc_matrices = {}
+        for key in model_keys:
+            try:
+                doc_matrices[key] = torch.stack([loaded_embeddings[key][doc_id] for doc_id in doc_ids_list]).to(device)
+            except TypeError:
+                doc_matrices[key] = torch.tensor(np.stack([loaded_embeddings[key][doc_id] for doc_id in doc_ids_list]),
+                                                 dtype=torch.float32).to(device)
+
+        # Determine weights for each query
+        query_weights = {}
+        qids = list(queries.keys())
+        for qid in qids:
+            query_length = len(queries[qid].split())
+            if query_length <= t1:
+                weight_key = 'short'
+            elif query_length <= t2:
+                weight_key = 'medium'
+            else:
+                weight_key = 'long'
+            query_weights[qid] = weights_config[weight_key]  # Get the list [w_short, w_medium, w_long]
+
+        # Calculate weighted scores
+        with torch.no_grad():
+            for qid in tqdm(qids, desc="Scoring Weighted Ensemble"):
+                weights = query_weights[qid]
+                weighted_doc_scores = None
+
+                for i, key in enumerate(model_keys):  # Order matters: short, medium, long
+                    # Use the query embedding generated by THIS model (key)
+                    q_emb = all_query_embeddings[key][qid]
+                    q_tensor = torch.tensor(q_emb, dtype=torch.float32).to(device)
+
+                    # Score query[key] against docs[key]
+                    q_scores_for_key = torch.matmul(doc_matrices[key], q_tensor).cpu()  # Keep on CPU
+
+                    if weighted_doc_scores is None:
+                        weighted_doc_scores = q_scores_for_key * weights[i]
+                    else:
+                        weighted_doc_scores += q_scores_for_key * weights[i]
+
+                # Note: Weights should sum to 1, otherwise normalization might be needed depending on interpretation
+                final_scores[qid] = {doc_ids_list[j]: float(weighted_doc_scores[j]) for j in range(len(doc_ids_list))}
+
+        scores = final_scores
+        del doc_matrices
+        del all_query_embeddings
+        gc.collect()
+        if torch.cuda.is_available(): torch.cuda.empty_cache()
+
+        # --- Evaluate with ir_measures ---
+        evaluator = ir_measures.evaluator(metrics, qrels)
+        results = evaluator.calc_aggregate(scores)
+
+        # Per-Query Dictionary Creation ---
+        per_query_results_list = list(evaluator.iter_calc(scores))  # Collect results first
+        per_query_dict = {}
+        for res in per_query_results_list:
+            qid = res.query_id
+            metric_str = str(res.measure)  # Get the specific measure string from the result
+            value = res.value
+
+            # Build the nested dictionary correctly
+            if qid not in per_query_dict:
+                per_query_dict[qid] = {}
+            # Assign the value only to the correct metric key
+            per_query_dict[qid][metric_str] = value
+
+        run_df = pd.DataFrame([(q, d, s) for q, docs_scores in scores.items() for d, s in docs_scores.items()],
+                              columns=['query_id', 'doc_id', 'score'])
+
+        print("Weighted average ensemble evaluation complete.")
+        return results, per_query_dict, run_df
+
+    except Exception as e:
+        print(f"Error during weighted average ensemble evaluation: {e}")
+        import traceback
+        traceback.print_exc()
+        return {}, {}, pd.DataFrame()
+    finally:
+        # --- Cleanup ---
+        print("Cleaning up weighted average ensemble resources...")
+        del loaded_embeddings
+        del scores
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
 
-    print("Scoring complete. Calculating metrics...")
-    # --- Calculate Metrics ---
-    metrics = [
-        nDCG @ 100,  # Quality of top 100 results (standard)
-        R @ 100,  # Recall within top 100
-        RR
-    ]
-    valid_qids_for_metrics = {qid for qid in qrels if qid in run and run[qid]}
-    filtered_qrels = {qid: qrels[qid] for qid in valid_qids_for_metrics}
-    filtered_run = {qid: run[qid] for qid in valid_qids_for_metrics}
-
-    if not filtered_run:
-         print("Warning: No valid queries with scores found to calculate metrics for weighted ensemble.")
-         return {}, {}, run
-
-    aggregate_scores = calc_aggregate(metrics, filtered_qrels, filtered_run)
-
-    print("Calculating per-query metrics...")
-    per_query_scores = get_per_query_metrics(metrics, filtered_qrels, filtered_run)
-    print("Metrics calculation complete.")
-
-    return aggregate_scores, per_query_scores, run
-
+# ---------------------------------------------------------------------
+# Utility Functions (Keep as they are)
+# ---------------------------------------------------------------------
 
 def perform_ttest(baseline_per_query, model_per_query, metric, alpha=0.05):
     """
@@ -815,6 +544,24 @@ def perform_ttest(baseline_per_query, model_per_query, metric, alpha=0.05):
         'significant': p_value < alpha,
         'improvement': np.mean(model_scores) > np.mean(baseline_scores)
     }
+
+
+def write_results(metrics_dict, save_path, model_name, dataset_name, length_setting):
+    """Writes evaluation metrics to a file."""
+    try:
+        with open(save_path, 'w') as f:
+            f.write(f"Results for Model: {model_name}, Dataset: {dataset_name}, Setting: {length_setting}\n")
+            f.write("-" * 30 + "\n")
+            if not metrics_dict:
+                f.write("No metrics available.\n")
+                return
+            for metric, score in metrics_dict.items():
+                # Ensure metric object is converted to string representation
+                metric_str = str(metric) if isinstance(metric, ir_measures.Measure) else metric
+                f.write(f"{metric_str}: {score:.4f}\n")
+        print(f"Results successfully written to {save_path}")
+    except Exception as e:
+        print(f"Error writing results to {save_path}: {e}")
 
 
 def compare_models_with_ttest(baseline_results, models_results, metrics, model_names):
@@ -863,31 +610,24 @@ def compare_models_with_ttest(baseline_results, models_results, metrics, model_n
 
 
 def write_ttest_results(ttest_df, save_path, baseline_name="Baseline"):
-    """
-    Saves t-test comparison results to a file.
+    """Writes the t-test results DataFrame to a formatted text file."""
+    try:
+        with open(save_path, 'w') as f:
+            f.write(f"T-Test Results (Comparison against {baseline_name})\n")
+            f.write("=" * 50 + "\n\n")
+            if ttest_df.empty:
+                f.write("No t-test results available.\n")
+                return
 
-    Args:
-        ttest_df: DataFrame with t-test results
-        save_path: Path to save the results
-        baseline_name: Name of the baseline model for the report
-    """
-    with open(save_path, "w") as f:
-        # --- Step 1: Define the title and output filename ---
-        title = "T-Test Results Summary:"
-
-        # --- Step 2: Convert DataFrame to string ---
-        # df.to_string() creates a string representation matching console output
-        df_string = ttest_df.to_string()
-
-        # --- Step 3: Write to the text file ---
-        try:
-            with open(save_path, 'w') as f:
-                f.write(title + "\n\n")  # Write the title and add a blank line
-                f.write(df_string)  # Write the formatted DataFrame string
-                f.write("\n")  # Add a final newline (optional)
-            print(f"Successfully wrote DataFrame to {save_path}")
-
-        except Exception as e:
-            print(f"An error occurred: {e}")
-
-    print(f"T-test results written to {save_path}")
+            # Format the DataFrame to string for better readability in the text file
+            # Adjust max_colwidth and other options as needed
+            df_string = ttest_df.to_string(
+                index=False,
+                float_format='{:.4f}'.format,  # Format floats nicely
+                justify='left',  # Left-align columns
+                col_space=12  # Add some space between columns
+            )
+            f.write(df_string)
+        print(f"T-test results successfully written to {save_path}")
+    except Exception as e:
+        print(f"Error writing t-test results to {save_path}: {e}")
