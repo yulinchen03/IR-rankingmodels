@@ -61,12 +61,11 @@ def validate_amp(model, val_loader, device, margin=1.0, use_amp=False): # <-- Ad
         margin: Margin for the triplet loss.
         use_amp: Boolean flag to enable/disable AMP autocast. # <-- Add description
     """
-    # print(f"Validation using AMP: {use_amp}") # Optional logging
     model.eval()
     model.to(device)
     total_val_loss = 0.
     num_val_batches = 0
-    with torch.no_grad(): # Still necessary
+    with torch.no_grad():
 
         for batch in tqdm(val_loader, desc="Validation"):
             # Move batch data to device
@@ -79,10 +78,6 @@ def validate_amp(model, val_loader, device, margin=1.0, use_amp=False): # <-- Ad
 
             # --- Wrap forward pass and loss calculation with autocast ---
             with autocast('cuda', enabled=use_amp):
-                # Decide whether to use model() or model.get_embedding()
-                # Using model.get_embedding() is generally safer if model.forward()
-                # includes the final sigmoid layer not needed for distance loss.
-                # Ensure your TripletRankerModel has the get_embedding method.
                 try:
                     query_embeddings = model.get_embedding(query_inputs, query_masks)
                     positive_embeddings = model.get_embedding(positive_inputs, positive_masks)
@@ -101,7 +96,7 @@ def validate_amp(model, val_loader, device, margin=1.0, use_amp=False): # <-- Ad
                 loss = torch.relu(positive_distances - negative_distances + margin).mean()
             # --- End autocast block ---
 
-            total_val_loss += loss.item() # loss.item() is always float32
+            total_val_loss += loss.item()
             num_val_batches += 1
 
     # Avoid division by zero if val_loader is empty

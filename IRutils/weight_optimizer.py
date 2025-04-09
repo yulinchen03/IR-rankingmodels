@@ -1,8 +1,8 @@
 import torch
 import optuna
-from ir_measures import calc_aggregate, nDCG, RR, P, R # Make sure these are imported
+from ir_measures import calc_aggregate, nDCG
 import numpy as np
-from tqdm import tqdm # For progress bar inside objective if needed
+from tqdm import tqdm
 
 def precompute_validation_scores(models, val_loader, device):
     """
@@ -71,14 +71,11 @@ def precompute_validation_scores(models, val_loader, device):
             # Store results per query ID
             for i in range(len(qids)):
                 qid = qids[i]
-                # Simple storage assuming one pos/neg per anchor in val loader
-                # If multiple instances for a qid appear, this might overwrite.
-                # A more robust approach might store lists per qid if needed.
                 val_scores[qid] = {
                     'pos_did': pos_dids[i],
                     'neg_did': neg_dids[i],
-                    'pos_scores': item_pos_scores[i], # [score_s, score_m, score_l]
-                    'neg_scores': item_neg_scores[i]  # [score_s, score_m, score_l]
+                    'pos_scores': item_pos_scores[i],
+                    'neg_scores': item_neg_scores[i]
                  }
 
     print("Pre-computation complete.")
@@ -174,12 +171,11 @@ def find_optimal_weights_config(precomputed_scores, query_val, qrels_val, t1, t2
 
         # Calculate the aggregate metric over the full validation qrels
         if not run or not qrels_val:
-             # print("Warning: Empty run or qrels for validation set in objective. Returning 0.")
-             return 0.0 # Can't calculate metric
+             print("Warning: Empty run or qrels for validation set in objective. Returning 0.")
+             return 0.0
 
         metric_scores = calc_aggregate([metric_to_optimize], qrels_val, run)
 
-        # Optuna maximizes, so return the score directly
         return metric_scores.get(metric_to_optimize, 0.0) # Return 0 if metric calculation fails
 
     # Create and run the Optuna study

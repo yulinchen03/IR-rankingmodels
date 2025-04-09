@@ -8,13 +8,6 @@ from IRutils.load_data import load, preprocess
 
 
 def run(model_name, dataset_name, length_setting):
-    metrics = [
-        nDCG @ 10, # Added nDCG@3
-        RR,
-        P @ 1,
-        R @ 10    # Added R@1, R@3
-    ]
-
     logging.disable(logging.WARNING)
 
     max_len_doc = 512  # max token length
@@ -63,8 +56,8 @@ def run(model_name, dataset_name, length_setting):
 
 
 if __name__ == "__main__":
-    run_models = ['distilroberta-base']
-    run_datasets = ['fiqa', 'quora']
+    run_models = ['microsoft/MiniLM-L12-H384-uncased', 'distilbert-base-uncased', 'distilroberta-base-uncased']  # customize the model architectures you want to train
+    run_datasets = ['fiqa', 'quora']  # customize the datasets you want your models to fine-tune on
     run_length_settings = ['short', 'medium', 'long', 'full']
     current_run = 0
 
@@ -84,7 +77,6 @@ if __name__ == "__main__":
                     print(f"!!! CRITICAL ERROR during run for {model} on {dataset}: {e} !!!")
                     print("!!! Skipping to next run !!!")
 
-                # Optional: Add delay or clear memory if needed between runs
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
 

@@ -1,0 +1,16 @@
+T-Test Results (Comparison against Baseline)
+==================================================
+
+Model                        Metric        Baseline Score  Model Score  Difference   Improvement %  T-Statistic  P-Value      Significant  Improvement
+            Average Ensemble nDCG@100     0.7617          0.7566       -0.0051      -0.6745        -0.4717      0.6373       False        False       
+            Average Ensemble    R@100     0.9559          0.9575        0.0016       0.1681         0.2222      0.8243       False         True       
+            Average Ensemble       RR     0.7318          0.7168       -0.0150      -2.0487        -1.0568      0.2910       False        False       
+        Conditional Ensemble nDCG@100     0.7617          0.7348       -0.0270      -3.5388        -2.3715      0.0180        True        False       
+        Conditional Ensemble    R@100     0.9559          0.9287       -0.0272      -2.8424        -2.9836      0.0030        True        False       
+        Conditional Ensemble       RR     0.7318          0.7022       -0.0296      -4.0393        -2.0200      0.0438        True        False       
+           Weighted Ensemble nDCG@100     0.7617          0.7988        0.0370       4.8608         3.6051      0.0003        True         True       
+           Weighted Ensemble    R@100     0.9559          0.9688        0.0129       1.3531         1.9342      0.0535       False         True       
+           Weighted Ensemble       RR     0.7318          0.7679        0.0361       4.9287         2.6884      0.0074        True         True       
+Regression Weighted Ensemble nDCG@100     0.7617          0.8053        0.0435       5.7144         4.1667      0.0000        True         True       
+Regression Weighted Ensemble    R@100     0.9559          0.9713        0.0154       1.6147         2.4008      0.0166        True         True       
+Regression Weighted Ensemble       RR     0.7318          0.7744        0.0426       5.8250         3.1061      0.0020        True         True       

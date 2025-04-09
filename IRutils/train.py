@@ -44,13 +44,12 @@ def train_triplet_ranker(model, train_loader, val_loader, optimizer, device, sav
                 positive_embeddings = model.get_embedding(positive_inputs, positive_masks)
                 negative_embeddings = model.get_embedding(negative_inputs, negative_masks)
             except AttributeError:
-                print(
-                    "Warning: model.get_embedding() not found, falling back to model(). Ensure model() returns corpus_embeddings.")
+                print("Warning: model.get_embedding() not found, falling back to model(). Ensure model() returns corpus_embeddings.")
                 query_embeddings = model(query_inputs, query_masks)
                 positive_embeddings = model(positive_inputs, positive_masks)
                 negative_embeddings = model(negative_inputs, negative_masks)
 
-            # Calculate triplet loss
+            # Calculate triplet loss (l2 norm)
             positive_distances = torch.norm(query_embeddings - positive_embeddings, p=2, dim=1)
             negative_distances = torch.norm(query_embeddings - negative_embeddings, p=2, dim=1)
 
@@ -90,6 +89,7 @@ def train_triplet_ranker(model, train_loader, val_loader, optimizer, device, sav
     return model
 
 
+# uses amp to reduce resource consumption during training
 def train_triplet_ranker_amp(model, train_loader, val_loader, optimizer, device, model_path,
                          epochs=10, patience=3, margin=1.0): # Add margin parameter
     """
@@ -126,8 +126,6 @@ def train_triplet_ranker_amp(model, train_loader, val_loader, optimizer, device,
 
             # --- AMP: Forward pass with autocast ---
             with autocast('cuda', enabled=use_amp):
-                # Ensure you use the same method (model() or get_embedding()) as in validate
-                # Using get_embedding here for consistency with validate's preference
                 try:
                     query_embeddings = model.get_embedding(query_inputs, query_masks)
                     positive_embeddings = model.get_embedding(positive_inputs, positive_masks)
@@ -138,7 +136,7 @@ def train_triplet_ranker_amp(model, train_loader, val_loader, optimizer, device,
                      positive_embeddings = model(positive_inputs, positive_masks)
                      negative_embeddings = model(negative_inputs, negative_masks)
 
-                # --- Calculate triplet loss EXACTLY as in validate.py ---
+                # --- Calculate triplet loss  ---
                 positive_distances = torch.norm(query_embeddings - positive_embeddings, p=2, dim=1)
                 negative_distances = torch.norm(query_embeddings - negative_embeddings, p=2, dim=1)
                 loss = torch.relu(positive_distances - negative_distances + loss_margin).mean()
@@ -176,7 +174,6 @@ def train_triplet_ranker_amp(model, train_loader, val_loader, optimizer, device,
     print("Training complete!")
     # Load the best model state before returning
     print(f"Loading best model from {model_path} based on validation loss ({best_val_loss:.4f}).")
-    # Ensure the file exists before trying to load
     if os.path.exists(model_path):
         model.load_state_dict(torch.load(model_path, map_location=device))
     else:

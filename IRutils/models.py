@@ -33,6 +33,7 @@ class TripletRankerModel(nn.Module):
         return self.forward(input_ids, attention_mask)
 
 
+# loads a singular model on demand
 def load_model(path, model_name, device, eval=True):
     model = TripletRankerModel(model_name).to(device=device)
     model.load_state_dict(torch.load(path, map_location=device))
@@ -41,7 +42,7 @@ def load_model(path, model_name, device, eval=True):
         model.eval()
     return model
 
-
+# load all fine-tuned models from the specified directory on demand
 def load_models(model_dir, model_name, device):
     model_paths = [os.path.join(model_dir, name) for name in os.listdir(model_dir) if "full" not in name]
     models = {}

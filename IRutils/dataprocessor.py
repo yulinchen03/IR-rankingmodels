@@ -25,7 +25,7 @@ class DataProcessor:
 
         return query_test, qrel_test
 
-
+    # return a subset of the original dataset filtered by query length
     def get_subset(self, min_len, max_len, full=False):
 
         filtered_queries = {qid: q for qid, q in self.queries.items() if min_len < len(q.split()) <= max_len}
@@ -51,7 +51,6 @@ class DataProcessor:
             random.seed(random_state)
         random.shuffle(keys)
 
-        # if dataset is used solely for training (only when seperate test set available)
         train_size = int(num_samples * train_ratio)
 
         train_keys = keys[:train_size]

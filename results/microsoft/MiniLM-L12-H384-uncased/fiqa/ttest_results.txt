@@ -1,0 +1,16 @@
+T-Test Results (Comparison against Baseline)
+==================================================
+
+Model                        Metric        Baseline Score  Model Score  Difference   Improvement %  T-Statistic  P-Value      Significant  Improvement
+            Average Ensemble nDCG@100     0.1749          0.1304       -0.0445      -25.4442       -5.2496      0.0000        True        False       
+            Average Ensemble    R@100     0.3961          0.3312       -0.0649      -16.3956       -4.3177      0.0000        True        False       
+            Average Ensemble       RR     0.1489          0.1037       -0.0452      -30.3697       -3.6948      0.0002        True        False       
+        Conditional Ensemble nDCG@100     0.1749          0.1250       -0.0498      -28.4933       -5.6896      0.0000        True        False       
+        Conditional Ensemble    R@100     0.3961          0.3075       -0.0886      -22.3737       -5.9097      0.0000        True        False       
+        Conditional Ensemble       RR     0.1489          0.1071       -0.0418      -28.0764       -3.2763      0.0011        True        False       
+           Weighted Ensemble nDCG@100     0.1749          0.1606       -0.0143       -8.1570       -1.7200      0.0859       False        False       
+           Weighted Ensemble    R@100     0.3961          0.3711       -0.0250       -6.3182       -1.7497      0.0806       False        False       
+           Weighted Ensemble       RR     0.1489          0.1405       -0.0084       -5.6146       -0.6697      0.5033       False        False       
+Regression Weighted Ensemble nDCG@100     0.1749          0.1572       -0.0177      -10.1235       -2.1575      0.0313        True        False       
+Regression Weighted Ensemble    R@100     0.3961          0.3657       -0.0304       -7.6741       -2.0972      0.0364        True        False       
+Regression Weighted Ensemble       RR     0.1489          0.1378       -0.0110       -7.4082       -0.8996      0.3687       False        False       

@@ -21,13 +21,13 @@ def load(dataset_name):
                 'hotpotqa': ['train', 'dev', 'test'],
                 'arguana': ['test'],
                 'quora': ['dev', 'test'],
-                'scidocs': ['test'],  # small
-                'fever': ['train', 'dev', 'test'],  # large
+                'scidocs': ['test'],
+                'fever': ['train', 'dev', 'test'],
                 'climate-fever': ['test'],
                 'scifact': ['train', 'test'],
                 'fiqa': ['train', 'dev', 'test'],
                 'nfcorpus': ['train', 'dev', 'test']
-                }
+                }  # selection from BEIR
 
     # Extract dataset from BEIR
     # Download and unzip the dataset
@@ -35,6 +35,7 @@ def load(dataset_name):
     data_path = util.download_and_unzip(url, "datasets")
 
     train_available = False
+    # If standalone training set available
     if 'train' in datasets[dataset_name]:
         # Load the dataset
         docs, queries, qrels = GenericDataLoader(data_folder=data_path).load(split="train")
@@ -65,9 +66,9 @@ def preprocess(queries, docs, qrels, model_name, length_setting, train_available
     # -----------------------------------------------------
     print(f'Dataset size: {len(queries)}')
 
-    # first seperate the test set (include queries of all lengths)
+    # First seperate the test set (include queries of all lengths)
     if not train_available:
-        query_test, qrel_test = dp.get_testset(test_ratio=0.065, random_state=random_state)
+        query_test, qrel_test = dp.get_testset(test_ratio=0.065, random_state=random_state)  # 650 queries for quora
         print(f'test size: {len(query_test)}')
     else:
         print(f'test size: {len(queries_test)}')
@@ -124,11 +125,11 @@ def preprocess(queries, docs, qrels, model_name, length_setting, train_available
     print('Creating test dataset...')
     if train_available:
         test_dataset = RankingDataset(queries_test, docs, qrels_test, tokenizer)  # query-doc instead of triplets
-        test_loader = DataLoader(test_dataset, batch_size=1024, shuffle=False, num_workers=2, pin_memory=True)
+        test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False, num_workers=2, pin_memory=True)
         return train_loader, val_loader, test_loader, {}, {}, query_val, qrel_val
     else:
         test_dataset = RankingDataset(query_test, docs, qrel_test, tokenizer)  # query-doc instead of triplets
-        test_loader = DataLoader(test_dataset, batch_size=1024, shuffle=False, num_workers=2, pin_memory=True)
+        test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False, num_workers=2, pin_memory=True)
         return train_loader, val_loader, test_loader, query_test, qrel_test, query_val, qrel_val
     # -----------------------------------------------------
 

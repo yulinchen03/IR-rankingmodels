@@ -1,11 +1,9 @@
-# --- START OF FILE dataset.py ---
-
 import random
 import time
 from typing import Dict, Union, List, Optional
 
 import torch
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset
 from tqdm import tqdm
 import logging
 
@@ -16,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 # for train and val
 class TripletRankingDataset(Dataset):
-    def __init__(self, queries, documents, qrels, tokenizer, num_negatives, neg_sample_size=10, max_length=512, for_eval=False):
+    def __init__(self, queries, documents, qrels, tokenizer, num_negatives, neg_sample_size=10, max_length=512):
         self.triplets = []
         self.num_negatives = num_negatives
         self.tokenizer = tokenizer
@@ -43,14 +41,11 @@ class TripletRankingDataset(Dataset):
                      continue
                  # Sample negatives per positive doc
                  for pos_did in positive_docs_ids:
-                     if for_eval:
-                        neg_dids = negative_candidates[:(100-len(positive_docs_ids))]  # sample a total of 100 documents from corpus for ranking
-                     else:
-                        neg_dids = random.sample(negative_candidates, min(neg_sample_size, len(negative_candidates)))  # sample 10 documents per positive doc for training
-                     for neg_did in neg_dids:
-                         self.triplets.append((qid, pos_did, neg_did))
+                    neg_dids = random.sample(negative_candidates, min(neg_sample_size, len(negative_candidates)))  # sample 10 negative/irrelevant documents per positive doc for training
+                    for neg_did in neg_dids:
+                        self.triplets.append((qid, pos_did, neg_did))
 
-            else: # Use provided negatives
+            else: # Use provided negatives if qrels already contain them
                 negative_docs_ids = [did for did, relevance in doc_dict.items() if relevance <= 0 and did in self.documents]
                 if not negative_docs_ids: # If only positives provided, cannot create triplets
                     continue
@@ -67,7 +62,7 @@ class TripletRankingDataset(Dataset):
 
         query = self.queries[qid] # Get query text
         pos_doc = self.documents[pos_did] # Get doc text
-        neg_doc = self.documents[neg_did] # Get doc text
+        neg_doc = self.documents[neg_did]
 
 
         # Extract text from document dictionaries if needed
@@ -81,7 +76,7 @@ class TripletRankingDataset(Dataset):
             query,
             padding="max_length",
             truncation=True,
-            max_length=self.max_length, # Use appropriate max length
+            max_length=self.max_length,
             return_tensors="pt"
         )
 
@@ -90,7 +85,7 @@ class TripletRankingDataset(Dataset):
             pos_doc,
             padding="max_length",
             truncation=True,
-            max_length=self.max_length, # Use appropriate max length
+            max_length=self.max_length,
             return_tensors="pt"
         )
 
@@ -99,7 +94,7 @@ class TripletRankingDataset(Dataset):
             neg_doc,
             padding="max_length",
             truncation=True,
-            max_length=self.max_length, # Use appropriate max length
+            max_length=self.max_length,
             return_tensors="pt"
         )
 
@@ -116,6 +111,7 @@ class TripletRankingDataset(Dataset):
         }
 
 
+# for test
 class RankingDataset(Dataset):
     def __init__(self, queries, documents, qrels, tokenizer, max_length=512):
         self.pairs = []
@@ -162,7 +158,7 @@ class RankingDataset(Dataset):
             query,
             padding="max_length",
             truncation=True,
-            max_length=self.max_length, # Use appropriate max length
+            max_length=self.max_length,
             return_tensors="pt"
         )
 
@@ -171,7 +167,7 @@ class RankingDataset(Dataset):
             doc,
             padding="max_length",
             truncation=True,
-            max_length=self.max_length, # Use appropriate max length
+            max_length=self.max_length,
             return_tensors="pt"
         )
 
@@ -196,11 +192,11 @@ def encode_corpus(
     documents: Dict[str, Union[str, Dict]],
     doc_encoder: PreTrainedModel,
     tokenizer: PreTrainedTokenizer,
-    batch_size: int = 1024,  # <--- INCREASED default, tune this!
+    batch_size: int = 1024,
     max_length: int = 512,
     device: Optional[torch.device] = None,
-    use_amp: bool = True,      # <--- Added flag for AMP
-    compile_model: bool = True, # <--- Added flag for torch.compile
+    use_amp: bool = True,      # flag for AMP
+    compile_model: bool = True, # flag for torch.compile
 ) -> Dict[str, torch.Tensor]:
     """
     Encodes all documents in the corpus with optimizations.
@@ -239,10 +235,6 @@ def encode_corpus(
     if compile_model:
         logger.info("Applying torch.compile to the document encoder...")
         try:
-            # Common modes:
-            # 'default': Good balance
-            # 'reduce-overhead': Faster compilation, potentially less speedup
-            # 'max-autotune': Slower compilation, potentially more speedup
             start_compile_time = time.time()
             doc_encoder = torch.compile(doc_encoder, mode='default')
             logger.info(f"torch.compile applied successfully (took {time.time() - start_compile_time:.2f}s). Note: First batch will include warmup/compilation time.")
@@ -253,12 +245,12 @@ def encode_corpus(
     # --- Data Preparation ---
     logger.info("Preparing document texts...")
     doc_ids = list(documents.keys())
-    doc_texts: List[str] = [] # Explicitly type hint
+    doc_texts: List[str] = []
     for doc_id in doc_ids:
         doc_content = documents[doc_id]
-        text_to_append = "" # Default to empty string
+        text_to_append = ""
         if isinstance(doc_content, dict):
-            text_to_append = doc_content.get("text", "") # Safely get text
+            text_to_append = doc_content.get("text", "")
         elif isinstance(doc_content, str):
             text_to_append = doc_content
         # Handle potential None or other unexpected types gracefully if necessary
@@ -267,10 +259,9 @@ def encode_corpus(
         doc_texts.append(text_to_append)
 
     num_docs = len(doc_ids)
-    corpus_embeddings: Dict[str, torch.Tensor] = {} # Explicit type hint
+    corpus_embeddings: Dict[str, torch.Tensor] = {}
 
     logger.info(f"Starting encoding of {num_docs} documents with batch size {batch_size}...")
-    # Check tokenizer type
     if not getattr(tokenizer, 'is_fast', False): # Use getattr for safety
          logger.warning("Tokenizer is not a 'Fast' tokenizer. Consider installing 'tokenizers' and ensuring a Fast tokenizer is loaded for better performance.")
 
@@ -281,11 +272,10 @@ def encode_corpus(
 
         inputs = tokenizer(
             batch_texts,
-            padding="longest", # <--- Use 'longest' or 'max_length'
+            padding="longest",
             truncation=True,
             max_length=max_length,
             return_tensors="pt",
-            # return_attention_mask=True # Ensure mask is returned, usually default with pt
         )
 
         # Move inputs to device
@@ -293,27 +283,14 @@ def encode_corpus(
 
         # Use AMP context manager if enabled
         with torch.amp.autocast('cuda', enabled=use_amp):
-            # Assuming your model has a method 'get_embedding' or similar
-            # If not, use the standard forward pass and extract embeddings
-            # e.g., outputs = doc_encoder(**inputs)
-            #      batch_embeddings = outputs.last_hidden_state[:, 0] # CLS token example
             try:
                  batch_embeddings = doc_encoder.get_embedding(
                      input_ids=inputs['input_ids'],
                      attention_mask=inputs['attention_mask']
                  )
             except AttributeError:
-                 # Fallback to standard model call if get_embedding doesn't exist
                  outputs = doc_encoder(**inputs)
-                 # Adapt this extraction based on your model and desired embedding type
-                 # Example: CLS token pooling
                  batch_embeddings = outputs.last_hidden_state[:, 0]
-                 # Example: Mean pooling (needs attention mask)
-                 # token_embeddings = outputs.last_hidden_state
-                 # input_mask_expanded = inputs['attention_mask'].unsqueeze(-1).expand(token_embeddings.size()).float()
-                 # sum_embeddings = torch.sum(token_embeddings * input_mask_expanded, 1)
-                 # sum_mask = torch.clamp(input_mask_expanded.sum(1), min=1e-9)
-                 # batch_embeddings = sum_embeddings / sum_mask
 
 
         # Move embeddings to CPU right away to free GPU memory for next batch

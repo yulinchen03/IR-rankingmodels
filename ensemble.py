@@ -1,301 +1,311 @@
 import os
-import sys
-import torch
 import logging
-import optuna  # Import optuna for logging control
-
-from IRutils.load_data import calculate_percentiles, load, preprocess
-from IRutils.inference import *
-from IRutils.models import load_model, load_models
-from IRutils.plotting_utils import create_comparison_plot
+import torch
+import sys
+import gc # Import garbage collector interface
+from transformers import AutoTokenizer, AutoModel # Added AutoModel for explicit loading if needed
+from IRutils.load_data import calculate_percentiles
+# Ensure these functions are updated as shown below
+from IRutils.inference import (
+    evaluate,
+    evaluate_average_ensemble,
+    evaluate_conditional_ensemble,
+    evaluate_weighted_average_ensemble,
+    write_results,
+    compare_models_with_ttest,
+    write_ttest_results
+)
+from IRutils.load_data import load, preprocess
+from IRutils.models import load_model, load_models # Assuming these are still needed for ensemble parts
+from IRutils.plot_utils import create_comparison_plot
 from IRutils.weight_optimizer import precompute_validation_scores, find_optimal_weights_config
-from ir_measures import nDCG, P, R, RR
+from ir_measures import nDCG, RR, R, P
+from IRutils.dataset import encode_corpus # Make sure this function exists and works as expected
 
-METRICS = [nDCG @ 10, RR, P @ 1, R @ 10]
-MAX_LEN_DOC = 512
-RANDOM_STATE = 42
-METRIC_TO_OPTIMIZE_WEIGHTS = nDCG @ 10 # Choose the metric to optimize weights for
-WEIGHT_OPT_TRIALS = 1000 # Number of Optuna trials per category (adjust as needed)
 
-optuna.logging.set_verbosity(optuna.logging.WARNING)
 logging.disable(logging.WARNING) # General disable for others if needed
 
-def run(model_name, dataset_name):
-    """
-    Performs baseline and ensemble evaluations for a given model and dataset.
+def run(model_name, dataset_name, metrics, device, length_setting='full', max_len_doc=512, random_state=42):
 
-    Args:
-        model_name (str): The name of the base model (e.g., 'huawei-noah/TinyBERT_General_4L_312D').
-        dataset_name (str): The name of the dataset (e.g., 'fiqa').
-    """
-    print(f"\n--- Running Ensemble Evaluation ---")
-    print(f"Model: {model_name}")
-    print(f"Dataset: {dataset_name}")
-    print("-" * 30)
+    results = {'baseline': {}, 'ens-avg': {}, 'ens-select': {}, 'ens-weighted': {},
+               'ens-learned-weighted': {}}
 
-    results = {'baseline': {}, 'ens-avg': {}, 'ens-select': {}, 'ens-weighted': {}, 'ens-learned-weighted': {}}
-    length_setting_baseline = 'full' # Baseline always uses the 'full' model
+    model_dir = f'models/{model_name.replace("/", os.sep)}/{dataset_name}' # Use forward slashes for consistency, os.sep for joining
+    baseline_path = os.path.join(model_dir, 'full_queries.pth')
+    results_save_dir = os.path.join('results', model_name.replace('/', os.sep), dataset_name)
+    embedding_save_dir = os.path.join('corpus_embeddings', model_name.replace('/', os.sep), dataset_name) # Define central embedding dir
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Using device: {device}")
-    model_dir = os.path.join('models', model_name.replace('/', os.sep), dataset_name) # Use os.sep for path compatibility
-    save_dir = os.path.join('results', model_name.replace('/', os.sep), dataset_name)
-    os.makedirs(save_dir, exist_ok=True)
+    os.makedirs(results_save_dir, exist_ok=True)
+    os.makedirs(embedding_save_dir, exist_ok=True) # Ensure embedding dir exists
 
-    # --- 1. Load Data & Preprocess ---
-    print("\n--- Loading and Preprocessing Data ---")
-    try:
-        train_available, docs, queries, qrels, docs_test, queries_test, qrels_test = load(dataset_name)
-        print('Dataset loading complete!')
+    print(f'Loading baseline model from {baseline_path}...')
+    # Keep baseline model loaded initially for embedding generation if needed, and evaluation
+    baseline_model = load_model(baseline_path, model_name, device)
+    # Load ensemble component models - needed for generation and evaluation
+    models = load_models(model_dir, model_name, device) # keys: short, medium, long
 
-        query_lengths = [len(txt.split()) for txt in list(queries.values())]
-        t1, t2 = calculate_percentiles(query_lengths)
-        print(f"Query length percentiles: t1={t1}, t2={t2}")
+    train_available, docs, queries, qrels, docs_test, queries_test, qrels_test = load(dataset_name)
+    print('Loading complete!')
 
-        # Preprocess using 'full' setting initially to get all loaders needed
-        # Note: The preprocess function internally handles splitting based on its length_setting arg,
-        # but we need the validation set split based on the *original* full query set for weight optimization.
-        # We also need the test set split based on the *original* full test set.
-        print("Preprocessing data (this might take a moment)...")
-        if train_available:
-            train_loader, val_loader, test_loader, split_queries_test, split_qrels_test, query_val, qrels_val = preprocess(
-                queries, docs, qrels, model_name, 'full', train_available,
-                queries_test=queries_test, qrels_test=qrels_test,
-                max_len_doc=MAX_LEN_DOC, random_state=RANDOM_STATE, for_eval=True
-            )
-        else:
-             # If no train split, validation comes from the main set, test is the rest
-            train_loader, val_loader, test_loader, split_queries_test, split_qrels_test, query_val, qrels_val = preprocess(
-                queries, docs, qrels, model_name, 'full', train_available,
-                max_len_doc=MAX_LEN_DOC, random_state=RANDOM_STATE, for_eval=True
-            )
-            # If no train_available, the 'test' data used later corresponds to split_queries_test/split_qrels_test
-            queries_test = split_queries_test # Use these for ensemble methods if no predefined test set
-            qrels_test = split_qrels_test
+    query_lengths = [len(txt.split()) for txt in list(queries.values())]
+    t1, t2 = calculate_percentiles(query_lengths)
 
-        print('Preprocessing complete!')
+    # We need the tokenizer for embedding generation and potentially evaluation functions
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
 
-    except Exception as e:
-        print(f"Error during data loading or preprocessing: {e}")
-        return # Stop processing this combination
-
-    # Determine which qrels/queries to use for final test evaluation based on availability
-    final_test_qrels = qrels_test if train_available else split_qrels_test
-    final_test_queries = queries_test if train_available else split_queries_test
-
-
-    # --- 2. Load All Ensemble Models ---
-    # Load models needed for ensemble methods first
-    print("\n--- Loading Ensemble Models ---")
-    try:
-        # Ensure model directory structure matches expectations (e.g., models/model_name/dataset_name/short_queries.pth)
-        ensemble_models = load_models(model_dir, model_name, device)
-        if not ensemble_models:
-             print(f"Warning: No ensemble models found in {model_dir}. Skipping ensemble evaluations.")
-             # We could potentially still run baseline, but let's skip all if ensembles are expected.
-             return
-        print(f"Successfully loaded {len(ensemble_models)} ensemble models.")
-    except Exception as e:
-        print(f"Error loading ensemble models from {model_dir}: {e}")
-        return # Stop if models can't be loaded
-
-
-    # --- 3. Evaluate Baseline Model ---
-    print("\n--- Evaluating Baseline Model (full_queries) ---")
-    try:
-        model_path_baseline = os.path.join(model_dir, f'full_queries.pth')
-        if not os.path.exists(model_path_baseline):
-             print(f"Baseline model not found at {model_path_baseline}. Skipping baseline evaluation.")
-        else:
-            model_baseline = load_model(model_path_baseline, model_name, device)
-            baseline_metrics, baseline_per_query, baseline_run = evaluate(model_baseline, test_loader, device, final_test_qrels)
-            print(baseline_metrics)
-
-            print("Baseline Scores:")
-            for metric in METRICS:
-                print(f'  Metric {metric} score: {baseline_metrics.get(metric, float("nan")):.4f}')
-            results['baseline'] = baseline_metrics
-
-            # Save baseline results
-            save_path_baseline = os.path.join(save_dir, 'baseline.txt')
-            write_results(baseline_metrics, save_path_baseline, model_name, dataset_name, length_setting_baseline)
-            print(f"Baseline results saved to {save_path_baseline}")
-            del model_baseline # Free memory
-            torch.cuda.empty_cache() # Clear cache if using GPU
-    except Exception as e:
-        print(f"Error during baseline evaluation: {e}")
-
-
-    # --- 4. Evaluate Ensemble - Average ---
-    print("\n--- Evaluating Ensemble (Average) ---")
-    try:
-        avg_metrics, avg_per_query, avg_run = evaluate_average_ensemble(ensemble_models, test_loader, device, final_test_qrels)
-        print("Ensemble Average Scores:")
-        for metric in METRICS:
-            print(f'  Metric {metric} score: {avg_metrics.get(metric, float("nan")):.4f}')
-        results['ens-avg'] = avg_metrics
-
-        save_path_avg = os.path.join(save_dir, 'ensemble-avg.txt')
-        write_results(avg_metrics, save_path_avg, model_name, dataset_name, "ensemble-average")
-        print(f"Ensemble average results saved to {save_path_avg}")
-    except Exception as e:
-        print(f"Error during average ensemble evaluation: {e}")
-
-    # --- 5. Evaluate Ensemble - Selective ---
-    print("\n--- Evaluating Ensemble (Selective) ---")
-    try:
-        cond_metrics, cond_per_query, cond_run = evaluate_conditional_ensemble(ensemble_models, t1, t2, test_loader, device, final_test_qrels, final_test_queries)
-        print("Ensemble Selective Scores:")
-        for metric in METRICS:
-            print(f'  Metric {metric} score: {cond_metrics.get(metric, float("nan")):.4f}')
-        results['ens-select'] = cond_metrics
-
-        save_path_select = os.path.join(save_dir, 'ensemble-selective.txt')
-        write_results(cond_metrics, save_path_select, model_name, dataset_name, "ensemble-selective")
-        print(f"Ensemble selective results saved to {save_path_select}")
-    except Exception as e:
-        print(f"Error during selective ensemble evaluation: {e}")
-
-
-    # --- 6. Evaluate Ensemble - Weighted (Fixed) ---
-    print("\n--- Evaluating Ensemble (Weighted - Fixed) ---")
-    try:
-        # Using the fixed weights from the notebook
-        weights_config_fixed = {
-            'short': [0.5, 0.25, 0.25], # Weights for [short, medium, long] models when query is short
-            'medium': [0.25, 0.5, 0.25],# Weights when query is medium
-            'long': [0.25, 0.25, 0.5]   # Weights when query is long
-        }
-        print(f"Using fixed weights: {weights_config_fixed}")
-        weighted_metrics, weighted_per_query, weighted_run = evaluate_weighted_average_ensemble(ensemble_models, weights_config_fixed,
-                                                                                                t1, t2, test_loader,
-                                                                                                device, final_test_qrels,
-                                                                                                final_test_queries)
-        print("Ensemble Weighted (Fixed) Scores:")
-        for metric in METRICS:
-            print(f'  Metric {metric} score: {weighted_metrics.get(metric, float("nan")):.4f}')
-        results['ens-weighted'] = weighted_metrics
-
-        save_path_weighted = os.path.join(save_dir, 'ensemble-weighted.txt')
-        write_results(weighted_metrics, save_path_weighted, model_name, dataset_name, "ensemble-weighted-fixed")
-        print(f"Ensemble weighted (fixed) results saved to {save_path_weighted}")
-    except Exception as e:
-        print(f"Error during fixed weighted ensemble evaluation: {e}")
-
-
-    # --- 7. Evaluate Ensemble - Weighted (Learned) ---
-    # Requires validation set - check if val_loader is available
-    if val_loader and query_val and qrels_val:
-        print("\n--- Optimizing and Evaluating Ensemble (Weighted - Learned) ---")
-        try:
-            # Precompute scores on the validation set
-            print("Precomputing validation scores...")
-            # Note: Ensure ensemble_models contains the models in the expected order [short, medium, long]
-            # The load_models function should guarantee this if filenames are consistent.
-            precomputed_val_scores = precompute_validation_scores(ensemble_models, val_loader, device)
-            print("Validation score precomputation complete.")
-
-            # Find the single optimal weights configuration using the validation set
-            print(f"Finding optimal weights using Optuna ({WEIGHT_OPT_TRIALS} trials, optimizing for {METRIC_TO_OPTIMIZE_WEIGHTS})...")
-            learned_weights_config = find_optimal_weights_config(
-                precomputed_val_scores,
-                query_val,
-                qrels_val,
-                t1, t2,
-                metric_to_optimize=METRIC_TO_OPTIMIZE_WEIGHTS,
-                n_trials=WEIGHT_OPT_TRIALS,
-                random_state=RANDOM_STATE
-            )
-            print("\nLearned Weights Config:")
-            print(learned_weights_config)
-
-            # Evaluate on the TEST set using the single learned weights config
-            print("\nEvaluating on TEST set using LEARNED weights configuration...")
-            learn_weighted_metrics, learn_weighted_per_query, learn_weighted_run = evaluate_weighted_average_ensemble(ensemble_models,
-                                                                                                    learned_weights_config,
-                                                                                                    t1, t2, test_loader,
-                                                                                                    device, final_test_qrels,
-                                                                                                    final_test_queries)
-
-            print("\nFinal Test Set Performance with Learned Weights:")
-            for metric in METRICS:
-                 print(f'  Metric {metric} score: {learn_weighted_metrics.get(metric, float("nan")):.4f}')
-            results['ens-learned-weighted'] = learn_weighted_metrics
-
-            # Save learned weighted results
-            save_path_learned = os.path.join(save_dir, 'ensemble-weighted-reg.txt')
-            write_results(learn_weighted_metrics, save_path_learned, model_name, dataset_name, "learned-weighted-config")
-            print(f"Ensemble learned weighted results saved to {save_path_learned}")
-
-        except Exception as e:
-            print(f"Error during learned weighted ensemble evaluation: {e}")
+    # Load the data
+    if train_available:
+        # Assuming preprocess handles splitting test set if needed, and returns val set
+        train_loader, val_loader, test_loader, split_queries_test, split_qrels_test, query_val, qrels_val = preprocess(
+            queries, docs, qrels, model_name, length_setting, train_available,
+            queries_test=queries_test, qrels_test=qrels_test,
+            max_len_doc=max_len_doc, random_state=random_state, for_eval=True)
+        eval_queries = queries_test # Use the original full test set queries if train available
+        eval_qrels = qrels_test
     else:
-        print("\n--- Skipping Learned Weighted Ensemble (Validation data not available) ---")
+        # If no train set, preprocess splits original data for test/val
+        train_loader, val_loader, test_loader, split_queries_test, split_qrels_test, query_val, qrels_val = preprocess(
+            queries, docs, qrels, model_name, length_setting, train_available,
+            max_len_doc=max_len_doc, random_state=random_state, for_eval=True)
+        eval_queries = split_queries_test # Use the split test set queries if no train available
+        eval_qrels = split_qrels_test
 
+    print('Preprocessing complete!')
 
-    # --- 8. Plot Results ---
-    print("\n--- Plotting Results ---")
-    try:
-        # Check if results dictionary has data before plotting
-        if any(results.values()):
-             plot_save_path = create_comparison_plot(results, METRICS, model_name, dataset_name, save_dir)
-             print(f"Comparison plot saved to {plot_save_path}")
+    # Combine models for easier iteration during embedding generation check
+    all_models_for_check = {'full': baseline_model, **models}
+
+    # ---------------------------------------------------------------
+    # Ensure Corpus Embeddings Exist (Generate if missing)
+    print("\n--- Ensuring Corpus Embeddings Exist ---")
+    for model_key, model_obj in all_models_for_check.items():
+        save_path = os.path.join(embedding_save_dir, f'{model_key}.pt')
+        if not os.path.exists(save_path):
+            print(f'Generating corpus embeddings for {model_key} model...')
+            try:
+                # Ensure the model object is valid and on the correct device
+                if model_obj is None:
+                     raise ValueError(f"Model object for key '{model_key}' is None.")
+                model_obj.to(device) # Make sure model is on the right device
+                model_obj.eval()    # Set to evaluation mode
+
+                corpus_embeddings = encode_corpus(docs, model_obj, tokenizer, device=device, max_length=max_len_doc) # Pass max_len_doc if needed by encode_corpus
+                torch.save(corpus_embeddings, save_path)
+                print(f"Embeddings for {model_key} saved successfully to {save_path}")
+                # --- Crucial: Free memory ---
+                del corpus_embeddings
+                gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except Exception as e:
+                print(f"!!! ERROR generating embeddings for {model_key} to {save_path}: {e} !!!")
+                # Decide how to handle: raise error, skip, etc.
+                raise # Re-raise to stop execution if embedding generation fails
         else:
-             print("Skipping plot generation as no results were successfully collected.")
-    except Exception as e:
-        print(f"Error during plotting: {e}")
+            print(f"Embeddings for {model_key} already exist at {save_path}")
 
-    print(f"\n--- Finished Ensemble Evaluation for {model_name} on {dataset_name} ---")
+    # loading embeddings inside each evaluate function.
+    # ---------------------------------------------------------------
+    # Perform ranking and evaluation on baseline
+    print("\n--- Evaluating Baseline Model ---")
+    baseline_embedding_path = os.path.join(embedding_save_dir, 'full.pt')
+    baseline_metrics, baseline_per_query, baseline_run = evaluate(
+        model=baseline_model,
+        tokenizer=tokenizer,
+        queries=eval_queries,
+        doc_embeddings_path=baseline_embedding_path, # Pass PATH
+        qrels=eval_qrels,
+        device=device,
+        max_length=max_len_doc
+    )
 
-    # Perform t-tests between baseline and all methods
-    metrics_to_test = [nDCG @ 100, RR, R @ 100]
-    model_names = ["Average Ensemble", "Conditional Ensemble", "Weighted Ensemble", "Regression Weighted Ensemble"]
-    model_results = [
+    # --- Free baseline model memory ---
+    print("Clearing baseline model from memory...")
+    del baseline_model
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    # ---------------------------------------------------------------
+
+    # ---------------------------------------------------------------
+    # Perform ranking and evaluation using average ensemble method
+    print("\n--- Evaluating Average Ensemble ---")
+    # Models dict ('short', 'medium', 'long') should still be loaded
+    avg_metrics, avg_per_query, avg_run = evaluate_average_ensemble(
+        models=models,
+        tokenizer=tokenizer,
+        queries=eval_queries,
+        embedding_save_dir=embedding_save_dir, # Pass DIR
+        qrels=eval_qrels,
+        device=device,
+        max_len_doc=max_len_doc
+    )
+
+    # Memory for embeddings used here is cleaned up inside evaluate_average_ensemble
+    # ---------------------------------------------------------------
+
+    # ---------------------------------------------------------------
+    # Perform ranking and evaluation using selective ensemble method
+    print("\n--- Evaluating Conditional Ensemble ---")
+    cond_metrics, cond_per_query, cond_run = evaluate_conditional_ensemble(
+        models=models,
+        tokenizer=tokenizer,
+        queries=eval_queries,
+        embedding_save_dir=embedding_save_dir, # Pass DIR
+        qrels=eval_qrels,
+        t1=t1, t2=t2,
+        device=device,
+        max_len_doc=max_len_doc
+    )
+
+    # Memory cleanup inside evaluate_conditional_ensemble
+    # ---------------------------------------------------------------
+
+    # ---------------------------------------------------------------
+    # Perform ranking and evaluation using weighted ensemble method
+    print("\n--- Evaluating Weighted Ensemble ---")
+    # Define fixed weights
+    weights_config = {'short': [0.5, 0.25, 0.25], 'medium': [0.25, 0.5, 0.25], 'long': [0.25, 0.25, 0.5]}
+
+    weighted_metrics, weighted_per_query, weighted_run = evaluate_weighted_average_ensemble(
+        models=models,
+        tokenizer=tokenizer,
+        queries=eval_queries,
+        embedding_save_dir=embedding_save_dir, # Pass DIR
+        weights_config=weights_config,
+        qrels=eval_qrels,
+        t1=t1, t2=t2,
+        device=device,
+        max_len_doc=max_len_doc
+    )
+
+    # Memory cleanup inside evaluate_weighted_average_ensemble
+    # ---------------------------------------------------------------
+
+    # ---------------------------------------------------------------
+    # Perform ranking and evaluation using learned weighted ensemble method
+    print("\n--- Optimizing Ensemble Weights using Validation Set ---")
+    # Assuming models dict ('short', 'medium', 'long') is still loaded.
+    precomputed_val_scores = precompute_validation_scores(models, val_loader, device)
+
+    weight_opt_trials = 1000  # number of configurations to sweep
+    metric_to_optimize_weights = nDCG @ 100 # Example metric
+
+    learned_weights_config = find_optimal_weights_config(
+        precomputed_val_scores,
+        query_val, qrels_val, # Use validation queries/qrels
+        t1, t2,
+        metric_to_optimize=metric_to_optimize_weights,
+        n_trials=weight_opt_trials,
+        random_state=random_state
+    )
+
+    print("\nLearned Weights Config:")
+    print(learned_weights_config)
+    del precomputed_val_scores # Free memory from validation scores
+    gc.collect()
+
+    print("\n--- Evaluating on TEST set using LEARNED weights ---")
+    learned_weighted_metrics, learned_weighted_per_query, learned_weighted_run = evaluate_weighted_average_ensemble(
+        models=models,
+        tokenizer=tokenizer,
+        queries=eval_queries,
+        embedding_save_dir=embedding_save_dir,
+        weights_config=learned_weights_config, # Use LEARNED weights
+        qrels=eval_qrels,
+        t1=t1, t2=t2,
+        device=device,
+        max_len_doc=max_len_doc
+    )
+
+    # Memory cleanup inside evaluate_weighted_average_ensemble
+    # ---------------------------------------------------------------
+
+    # --- Free ensemble models memory ---
+    print("Clearing ensemble models from memory...")
+    del models
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    # ---------------------------------------------------------------
+
+
+    # ---------------------------------------------------------------
+    # Plot results
+    print("\n--- Plotting Results ---")
+    create_comparison_plot(results, metrics, model_name, dataset_name, results_save_dir)
+    print(f"Comparison plot saved in {results_save_dir}")
+    # ---------------------------------------------------------------
+
+    # ---------------------------------------------------------------
+    # Perform statistical t-test on results
+    print("\n--- Performing T-Tests ---")
+    model_names_ttest = ["Average Ensemble", "Conditional Ensemble", "Weighted Ensemble", "Regression Weighted Ensemble"]
+    model_results_ttest = [
         (avg_metrics, avg_per_query, avg_run),
         (cond_metrics, cond_per_query, cond_run),
         (weighted_metrics, weighted_per_query, weighted_run),
-        (learn_weighted_metrics, learn_weighted_per_query, learn_weighted_run)
+        (learned_weighted_metrics, learned_weighted_per_query, learned_weighted_run)
     ]
 
-    # --- 9. Run t-tests and save results ---
-    ttest_df = compare_models_with_ttest(
-        (baseline_metrics, baseline_per_query, baseline_run),
-        model_results,
-        METRICS,
-        model_names
-    )
+    # Ensure baseline results are not empty before comparing
+    if baseline_metrics:
+         ttest_df = compare_models_with_ttest(
+             baseline_results=(baseline_metrics, baseline_per_query, baseline_run),
+             models_results=model_results_ttest,
+             metrics=metrics,
+             model_names=model_names_ttest
+         )
 
-    ttest_save_path = os.path.join(save_dir, 'ttest_results.txt')
-    # Save t-test results
-    write_ttest_results(ttest_df, ttest_save_path, "Baseline")
+         ttest_save_path = os.path.join(results_save_dir, 'ttest_results.txt')
+         write_ttest_results(ttest_df, ttest_save_path, "Baseline")
 
-    # You can also print the DataFrame for a quick view
-    print("\nT-Test Results Summary:")
-    print(ttest_df[['Model', 'Metric', 'P-Value', 'Significant', 'Improvement %']])
+         print("\nT-Test Results Summary (vs Baseline):")
+         print(ttest_df)
+    else:
+        print("Skipping T-tests as baseline results are missing.")
     # ---------------------------------------------------------------
 
 
 if __name__ == "__main__":
+    # Recommend using CUDA if available
+    if torch.cuda.is_available():
+        device = torch.device("cuda:0")
+        print(f"Using CUDA device: {torch.cuda.get_device_name(0)}")
+    else:
+        device = torch.device("cpu")
+        print("Using CPU")
+
     # Define the models and datasets to run
-    run_models = ['microsoft/MiniLM-L12-H384-uncased', 'distilbert-base-uncased', 'distilroberta-base-uncased']
+    run_models = ['distilbert-base-uncased', 'microsoft/MiniLM-L12-H384-uncased', 'distilroberta-base']
     run_datasets = ['fiqa', 'quora']
 
-    # Example for multiple runs (uncomment above lines and comment single run lines)
+    metrics = [
+        nDCG@100,
+        R@100,
+        RR
+    ]
+
     print("Starting ensemble evaluation runs...")
     total_runs = len(run_models) * len(run_datasets)
     current_run = 0
 
-    for model in run_models:
-        for dataset in run_datasets:
+    for model_name_run in run_models:
+        for dataset_name_run in run_datasets:
             current_run += 1
-            print(f"\n>>> Starting Run {current_run}/{total_runs} <<<")
+            print(f"\n>>> Starting Run {current_run}/{total_runs} [Model: {model_name_run}, Dataset: {dataset_name_run}] <<<")
             try:
-                run(model, dataset)
+                run(model_name_run, dataset_name_run, metrics, device)
+                print(f">>> Run {current_run}/{total_runs} Completed Successfully <<<")
             except Exception as e:
-                print(f"!!! CRITICAL ERROR during run for {model} on {dataset}: {e} !!!")
+                print(f"!!! CRITICAL ERROR during run {current_run}/{total_runs} for {model_name_run} on {dataset_name_run}: {e} !!!")
+                import traceback
+                traceback.print_exc() # Print detailed traceback
                 print("!!! Skipping to next run !!!")
-            # Optional: Add delay or clear memory if needed between runs
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+            finally:
+                # Explicit cleanup between major runs
+                gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
 
     print("\nAll ensemble evaluation runs completed.")
