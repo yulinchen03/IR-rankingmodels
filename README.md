@@ -3,7 +3,7 @@ April 2025, TU Delft
 
 This repository contains scripts and data for our experiments as described in our paper:
 
-`Beyond Monolithic Finetuning: Evaluating Query-Length-Specific Finetuning and Ensembling for Neural Retrieval Models`
+[`Beyond Monolithic Finetuning: Evaluating Query-Length-Specific Finetuning and Ensembling for Neural Retrieval Models`](report.pdf)
 
 
 ## To get started
